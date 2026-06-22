@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RecruitFlow — WhatsApp Bridge</title>
+<style>
+  :root{--bg:#0f1117;--panel:#171a23;--panel2:#1e222d;--line:#2a2f3d;--txt:#e7e9ee;--muted:#9aa1b1;--brand:#6d5efc;--brand2:#8b7dff;--green:#22c55e;--wa:#25d366;--wabg:#0b2a1c;--red:#ef4444;--amber:#f59e0b;--radius:14px}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;font-size:14px;line-height:1.45}
+  button{font-family:inherit;cursor:pointer}
+  input,select,textarea{font-family:inherit;font-size:14px}
+  .app{max-width:1180px;margin:0 auto;padding:0 18px 60px}
+  header{position:sticky;top:0;z-index:30;background:rgba(15,17,23,.9);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+  .hwrap{max-width:1180px;margin:0 auto;display:flex;align-items:center;gap:16px;padding:12px 18px;flex-wrap:wrap}
+  .logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:16px}
+  .logo .mark{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--brand),var(--brand2));display:grid;place-items:center}
+  nav{display:flex;gap:4px;margin-left:8px;flex-wrap:wrap}
+  nav button{background:transparent;border:0;color:var(--muted);padding:8px 13px;border-radius:9px;font-weight:600;font-size:13.5px}
+  nav button.active{background:var(--panel2);color:var(--txt)}
+  .waPill{margin-left:auto;display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;background:var(--panel2);border:1px solid var(--line);padding:6px 11px;border-radius:30px;cursor:pointer}
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block;background:var(--muted)}
+  .dot.ok{background:var(--green)} .dot.warn{background:var(--amber)} .dot.bad{background:var(--red)}
+  .btn{background:var(--brand);color:#fff;border:0;padding:9px 15px;border-radius:9px;font-weight:600;font-size:13.5px;display:inline-flex;align-items:center;gap:7px}
+  .btn:hover{background:var(--brand2)}
+  .btn.sec{background:var(--panel2);border:1px solid var(--line);color:var(--txt)} .btn.sec:hover{border-color:var(--brand)}
+  .btn.run{background:linear-gradient(135deg,var(--green),#16a34a)} .btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--line)}
+  .btn.sm{padding:6px 11px;font-size:12.5px} .btn:disabled{opacity:.5;cursor:not-allowed}
+  h1{font-size:22px;margin:22px 0 4px} h2{font-size:17px;margin:0} .sub{color:var(--muted);margin:0 0 18px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px}
+  .row{display:flex;gap:14px;flex-wrap:wrap} .between{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+  .grid{display:grid;gap:14px} .jobs{grid-template-columns:repeat(auto-fill,minmax(290px,1fr))}
+  .jobcard{cursor:pointer;transition:.15s;display:flex;flex-direction:column;gap:10px} .jobcard:hover{border-color:var(--brand);transform:translateY(-2px)}
+  .jobcard .t{font-weight:700;font-size:16px}
+  .chips{display:flex;flex-wrap:wrap;gap:6px} .chip{background:var(--panel2);border:1px solid var(--line);border-radius:30px;padding:3px 10px;font-size:12px;color:var(--muted)}
+  .meta{display:flex;gap:14px;color:var(--muted);font-size:12.5px;margin-top:auto} .meta b{color:var(--txt)}
+  .field{display:flex;flex-direction:column;gap:6px;margin-bottom:13px} .field label{font-size:12.5px;color:var(--muted);font-weight:600}
+  .field input,.field select,.field textarea{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:10px 11px;width:100%}
+  .field textarea{min-height:90px;resize:vertical} .field input:focus,.field select:focus,.field textarea:focus{outline:none;border-color:var(--brand)}
+  .f2{display:grid;grid-template-columns:1fr 1fr;gap:0 14px} .f3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:0 14px}
+  .hint{font-size:11.5px;color:var(--muted)}
+  .overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:50;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto}
+  .modal{background:var(--panel);border:1px solid var(--line);border-radius:16px;width:100%;max-width:620px;padding:22px} .modal.lg{max-width:760px}
+  .modalsub{color:var(--muted);margin:0 0 16px;font-size:13px} .x{background:transparent;border:0;color:var(--muted);font-size:22px}
+  .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius)} table{border-collapse:collapse;width:100%;min-width:640px}
+  th,td{text-align:left;padding:10px 13px;border-bottom:1px solid var(--line);font-size:13px;white-space:nowrap} th{color:var(--muted);font-weight:600;background:var(--panel2)}
+  tr:last-child td{border-bottom:0} tr:hover td{background:var(--panel2)}
+  .badge{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:30px;font-size:11.5px;font-weight:600;white-space:nowrap}
+  .b-grey{background:var(--panel2);color:var(--muted);border:1px solid var(--line)} .b-blue{background:#0e1d33;color:#93c5fd}
+  .b-green{background:#0e2a1a;color:#86efac} .b-red{background:#2a1212;color:#fca5a5} .b-amber{background:#2a2010;color:#fcd34d}
+  .pipe{display:flex;gap:12px;overflow-x:auto;padding-bottom:8px}
+  .pcol{min-width:220px;flex:1;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);display:flex;flex-direction:column}
+  .pcol .ph{padding:11px 13px;border-bottom:1px solid var(--line);font-weight:700;font-size:13px;display:flex;justify-content:space-between}
+  .pcol .pb{padding:10px;display:flex;flex-direction:column;gap:8px;min-height:50px}
+  .pcard{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:9px 10px;cursor:pointer} .pcard:hover{border-color:var(--brand)}
+  .pcard .nm{font-weight:600;font-size:13px} .pcard .sm{color:var(--muted);font-size:11.5px}
+  .empty{text-align:center;color:var(--muted);padding:50px 20px} .empty .big{font-size:34px;margin-bottom:8px}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:13px} .kv .k{color:var(--muted)}
+  .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 15px;min-width:120px} .stat .n{font-size:24px;font-weight:700} .stat .l{color:var(--muted);font-size:12px}
+  .banner{background:#2a2010;border:1px solid #5b4a1a;color:#fcd34d;border-radius:12px;padding:11px 14px;font-size:12.5px;display:flex;gap:9px;align-items:flex-start;margin-bottom:16px}
+  .crumb{color:var(--muted);font-size:13px;margin:14px 0 0} .crumb a{cursor:pointer;color:var(--brand2)}
+  .chatbody{background:#0b141a;border:1px solid var(--line);border-radius:12px;padding:13px;display:flex;flex-direction:column;gap:9px;max-height:440px;overflow-y:auto}
+  .bub{max-width:82%;padding:8px 11px;border-radius:12px;font-size:13px;white-space:pre-wrap;word-break:break-word}
+  .bub.sys{align-self:flex-start;background:#1f2c33;border-bottom-left-radius:3px} .bub.cand{align-self:flex-end;background:#005c4b;color:#fff;border-bottom-right-radius:3px}
+  .qrbox{display:flex;flex-direction:column;align-items:center;gap:12px;text-align:center} .qrbox img{border-radius:12px;border:6px solid #fff;width:300px;height:300px}
+  .seg{display:inline-flex;background:var(--panel2);border:1px solid var(--line);border-radius:9px;overflow:hidden} .seg button{background:transparent;border:0;color:var(--muted);padding:7px 13px;font-weight:600;font-size:12.5px} .seg button.active{background:var(--brand);color:#fff}
+  .logbox{background:#0a0c10;border:1px solid var(--line);border-radius:10px;padding:10px;font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:#9fe0b0;max-height:160px;overflow:auto;white-space:pre-wrap}
+  @media(max-width:760px){.f2,.f3{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header><div class="hwrap">
+  <div class="logo"><span class="mark">⚡</span> RecruitFlow <span style="font-size:11px;color:var(--muted);font-weight:600">· WhatsApp Bridge</span></div>
+  <nav id="nav"></nav>
+  <div style="margin-left:auto;display:flex;gap:8px">
+    <div class="waPill" id="waPill" onclick="openConnect()"><span class="dot" id="waDot"></span><span id="waText">…</span></div>
+    <div class="waPill" id="emPill" onclick="setTab('settings')"><span class="dot" id="emDot"></span><span id="emText">Email</span></div>
+  </div>
+</div></header>
+<div class="app" id="view"></div>
+<div id="overlay"></div>
+
+<script>
+const api=(m,u,b)=>fetch(u,{method:m,headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined}).then(r=>r.json());
+const esc=s=>(s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let DB={jobs:[],candidates:[],company:''};
+let STATUS={waStatus:'starting',qr:null,connectedAs:null,logs:[]};
+let UI={tab:'jobs',jobId:null,channel:'wa'};
+
+const STAGE_META={new:['Not started','b-grey'],outreach:['Outreach sent','b-blue'],location:['Asked location','b-blue'],preflocation:['Preferred location','b-blue'],workpref:['Work preference','b-blue'],experience:['Experience','b-blue'],role:['Current role','b-blue'],currentctc:['Current CTC','b-blue'],expectedctc:['Expected CTC','b-blue'],notice:['Notice period','b-blue'],skills:['Skill questions','b-blue'],avail:['Scheduling','b-amber'],avail_time:['Scheduling','b-amber'],avail_day:['Scheduling','b-amber'],scheduled:['Call scheduled ✓','b-green'],declined:['Not interested','b-red'],location_dropout:['Location mismatch','b-red'],notice_dropout:['Notice too long','b-red']};
+const badge=s=>{const m=STAGE_META[s]||STAGE_META.new;return `<span class="badge ${m[1]}">${esc(m[0])}</span>`;};
+const candsOf=jid=>DB.candidates.filter(c=>c.jobId===jid);
+const job=id=>DB.jobs.find(j=>j.id===id);
+const cand=id=>DB.candidates.find(c=>c.id===id);
+
+/* ---- polling ---- */
+async function refresh(){ try{ STATUS=await api('GET','/api/status'); }catch(e){} renderWaPill(); }
+async function reload(){ DB=await api('GET','/api/state'); render(); }
+setInterval(async()=>{ await refresh(); if(!document.getElementById('overlay').innerHTML && UI.tab!=='settings'){ try{DB=await api('GET','/api/state');}catch(e){} render(); } },3000);
+
+function renderWaPill(){
+  const map={ready:['ok','Connected'],starting:['warn','Starting…'],qr:['warn','Scan QR to connect'],authenticated:['warn','Authenticating…'],disconnected:['bad','Disconnected'],auth_failure:['bad','Login failed']};
+  const [cls,txt]=map[STATUS.waStatus]||['warn',STATUS.waStatus];
+  document.getElementById('waDot').className='dot '+cls;
+  document.getElementById('waText').textContent=STATUS.connectedAs&&STATUS.waStatus==='ready'?('WhatsApp: +'+STATUS.connectedAs):('WhatsApp: '+txt);
+  const ep=document.getElementById('emPill');
+  if(ep){const ecls=STATUS.emailReady?(STATUS.emailStatus==='error'?'bad':'ok'):'warn';
+    document.getElementById('emDot').className='dot '+ecls;
+    document.getElementById('emText').textContent=STATUS.emailReady?('Email: '+(STATUS.emailUser||'on')):'Email: set up';}
+}
+
+/* ---- nav ---- */
+function renderNav(){
+  const flags=DB.candidates.reduce((a,c)=>a+c.wa.flags.filter(f=>!f.resolved).length+((c.em&&c.em.flags)?c.em.flags.filter(f=>!f.resolved).length:0),0);
+  const tabs=[['jobs','Jobs & Candidates'],['pipeline','Pipeline'],['responses','Responses'],['flags',`Flagged ${flags?`(${flags})`:''}`],['settings','Settings']];
+  document.getElementById('nav').innerHTML=tabs.map(([k,l])=>`<button class="${UI.tab===k?'active':''}" onclick="setTab('${k}')">${esc(l)}</button>`).join('');
+}
+function setTab(t){UI.tab=t;UI.jobId=null;render();}
+const CH=c=>UI.channel==='em'?(c.em||{stage:'new',answers:{},flags:[],transcript:[]}):c.wa;
+
+function render(){
+  renderNav();
+  const v=document.getElementById('view');
+  if(UI.tab==='jobs') return UI.jobId?renderJobDetail(v):renderJobs(v);
+  if(UI.tab==='pipeline') return renderPipeline(v);
+  if(UI.tab==='responses') return renderResponses(v);
+  if(UI.tab==='flags') return renderFlags(v);
+  if(UI.tab==='settings') return renderSettings(v);
+}
+function chanToggle(){return `<div class="seg"><button class="${UI.channel!=='em'?'active':''}" onclick="UI.channel='wa';render()">WhatsApp</button><button class="${UI.channel==='em'?'active':''}" onclick="UI.channel='em';render()">Email</button></div>`;}
+
+/* ---- jobs ---- */
+function renderJobs(v){
+  v.innerHTML=`<div class="between"><div><h1>Jobs</h1><p class="sub">Create a role, add candidates, then RUN to send real WhatsApp outreach from your number.</p></div>
+    <button class="btn" onclick="jobForm()">+ New Job</button></div>
+    ${DB.jobs.length?`<div class="grid jobs">${DB.jobs.map(jobCard).join('')}</div>`:`<div class="empty"><div class="big">📋</div>No jobs yet. Create your first role.</div>`}`;
+}
+function jobCard(j){const list=candsOf(j.id);const sched=list.filter(c=>c.wa.stage==='scheduled'||(c.em&&c.em.stage==='scheduled')).length;
+  return `<div class="card jobcard" onclick="openJob('${j.id}')"><div class="t">${esc(j.title)}</div>
+    <div class="chips"><span class="chip">${esc(j.department||'—')}</span><span class="chip">📍 ${esc(j.location||'—')}</span>${j.roleType?`<span class="chip" style="background:${j.roleType==='Managerial'?'#2a2010':'#0e1d33'};color:${j.roleType==='Managerial'?'#fcd34d':'#93c5fd'}">${esc(j.roleType)}</span>`:''}<span class="chip">${j.remote==='Yes'?'Remote OK':'On-site'}</span><span class="chip">${j.workingDays} days/wk</span></div>
+    <div class="meta"><span><b>${list.length}</b> candidates</span><span><b>${sched}</b> scheduled</span></div></div>`;}
+function openJob(id){UI.jobId=id;render();scrollTo(0,0);}
+
+function renderJobDetail(v){
+  const j=job(UI.jobId); if(!j){UI.jobId=null;return render();}
+  const list=candsOf(j.id);
+  v.innerHTML=`<div class="crumb"><a onclick="UI.jobId=null;render()">← All jobs</a></div>
+  <div class="between"><div><h1>${esc(j.title)}</h1><p class="sub">${esc(j.department||'')} · ${esc(j.location||'')} · ${j.workingDays} days/week · ${j.remote==='Yes'?'Remote applicable':'On-site only'}</p></div>
+    <div class="toolbar"><button class="btn sec sm" onclick="jobForm('${j.id}')">Edit</button>
+      <button class="btn run" id="runBtn" onclick="runJob('${j.id}')">▶ RUN — WhatsApp first</button>
+      <button class="btn sm" id="runEmailBtn" style="background:var(--blue)" onclick="runEmailJob('${j.id}')">✉️ Send Email now</button></div></div>
+  <div class="banner" style="background:var(--bluebg);border-color:#1e3a5f;color:#93c5fd">⏱️ <b>WhatsApp-first:</b> RUN messages candidates on WhatsApp. If someone doesn't reply within <b>24 hours</b>, they're automatically emailed the same outreach. (Use "Send Email now" only to email immediately.)</div>
+  ${STATUS.waStatus!=='ready'?`<div class="banner">⚠️ WhatsApp isn't connected yet. <a style="color:#fcd34d;text-decoration:underline;cursor:pointer" onclick="openConnect()">Connect now</a> before running WhatsApp outreach.</div>`:''}
+  ${!STATUS.emailReady?`<div class="banner">✉️ Email isn't set up yet. <a style="color:#fcd34d;text-decoration:underline;cursor:pointer" onclick="setTab('settings')">Add your email in Settings</a> to send email outreach.</div>`:''}
+  <div class="row" style="margin-bottom:16px">
+    <div class="card" style="flex:2;min-width:280px"><h2 style="margin-bottom:10px">Job details</h2>
+      <div class="kv"><span class="k">Role type</span><span><b>${esc(j.roleType||'—')}</b> ${j.roleType?`<span class="hint">(auto-detected from title)</span>`:''}</span><span class="k">Experience</span><span>${esc(j.experience)} years</span><span class="k">Key skills</span><span>${esc(j.skills||'—')}</span><span class="k">Max notice</span><span>${j.maxNoticeDays==null?'No limit':(j.maxNoticeDays==0?'Immediate joiners only':j.maxNoticeDays+' days')}</span><span class="k">Hiring timeline</span><span>${esc(j.timeline||'—')}</span><span class="k">Skill questions</span><span>${(j.skillQuestions&&j.skillQuestions.length)?esc(j.skillQuestions.length+' question(s)'):'—'}</span></div>
+      ${(j.skillQuestions&&j.skillQuestions.length)?`<div style="margin-top:10px"><div class="hint" style="margin-bottom:4px">Skill questions asked</div><ol style="margin:0;padding-left:18px;font-size:13px">${j.skillQuestions.map(q=>`<li>${esc(q)}</li>`).join('')}</ol></div>`:''}
+      <div style="margin-top:12px"><div class="hint" style="margin-bottom:4px">Job description</div><div style="font-size:13px;white-space:pre-wrap">${esc(j.jd||'—')}</div></div></div>
+    <div class="card" style="flex:1;min-width:230px"><h2 style="margin-bottom:10px">Add candidates</h2>
+      <button class="btn" style="width:100%;justify-content:center;margin-bottom:8px" onclick="candForm('${j.id}')">+ Add one candidate</button>
+      <button class="btn sec" style="width:100%;justify-content:center" onclick="bulkForm('${j.id}')">⬆ Bulk upload (CSV)</button>
+      <p class="hint" style="margin-top:10px">CSV columns: Full Name, Email, Phone, Target Location</p></div></div>
+  <div class="between"><h2>Candidates (${list.length})</h2><button class="btn ghost sm" onclick="exportCSV('${j.id}')">⬇ Export to Excel/CSV</button></div>
+  ${list.length?candTable(list):`<div class="empty"><div class="big">👤</div>No candidates yet.</div>`}`;
+}
+function candTable(list){return `<div class="tablewrap" style="margin-top:10px"><table>
+  <thead><tr><th>Name</th><th>Phone</th><th>Target city</th><th>WhatsApp</th><th>Email</th><th>Flags</th><th></th></tr></thead>
+  <tbody>${list.map(c=>{const f=c.wa.flags.filter(x=>!x.resolved).length+((c.em&&c.em.flags)?c.em.flags.filter(x=>!x.resolved).length:0);return `<tr><td><b>${esc(c.name)}</b><br><span style="color:var(--muted)">${esc(c.email||'')}</span></td>
+    <td>${esc(c.phone)}</td><td>${esc(c.targetLocation||'—')}</td><td>${badge(c.wa.stage)}</td><td>${badge((c.em||{}).stage||'new')}</td><td>${f?`<span style="color:var(--amber)">⚑ ${f}</span>`:'—'}</td>
+    <td><button class="btn sec sm" onclick="viewChat('${c.id}')">View chat</button> <button class="btn ghost sm" onclick="delCand('${c.id}')">✕</button></td></tr>`;}).join('')}</tbody></table></div>`;}
+async function runEmailJob(jid){
+  if(!STATUS.emailReady){return setTab('settings');}
+  const btn=document.getElementById('runEmailBtn'); if(btn){btn.disabled=true;btn.textContent='Sending…';}
+  const r=await api('POST','/api/run-email/'+jid); await reload();
+  if(r.error)toast('⚠️ '+r.error); else toast(`✉️ Email outreach sent to ${r.sent} candidate(s).`+(r.failed&&r.failed.length?` Skipped: ${r.failed.join(', ')}`:''));
+}
+
+async function runJob(jid){
+  if(STATUS.waStatus!=='ready'){return openConnect();}
+  const btn=document.getElementById('runBtn'); if(btn){btn.disabled=true;btn.textContent='Sending…';}
+  const r=await api('POST','/api/run/'+jid);
+  await reload();
+  if(r.error)toast('⚠️ '+r.error);
+  else toast(`🚀 Sent outreach to ${r.sent} candidate(s).`+(r.failed&&r.failed.length?` Skipped: ${r.failed.join(', ')}`:''));
+}
+
+/* ---- pipeline ---- */
+const PCOLS=[['new','Not started'],[['outreach','location','preflocation'],'Outreach / Location'],[['workpref','experience','role','currentctc','expectedctc','notice','skills'],'Qualifying'],[['avail','avail_time','avail_day'],'Scheduling'],['scheduled','Scheduled ✓'],[['declined','location_dropout','notice_dropout'],'Dropped off']];
+function renderPipeline(v){
+  const pool=UI.jobId?candsOf(UI.jobId):DB.candidates;
+  v.innerHTML=`<div class="between"><div><h1>Pipeline</h1><p class="sub">Live stage of every candidate (updates as they reply).</p></div>
+    <div class="toolbar">${chanToggle()}<select onchange="UI.jobId=this.value||null;render()" style="background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:8px 10px"><option value="">All jobs</option>${DB.jobs.map(j=>`<option value="${j.id}" ${UI.jobId===j.id?'selected':''}>${esc(j.title)}</option>`).join('')}</select></div></div>
+  <div class="pipe">${PCOLS.map(([key,title])=>{const keys=Array.isArray(key)?key:[key];const items=pool.filter(c=>keys.includes(CH(c).stage));
+    return `<div class="pcol"><div class="ph">${esc(title)}<span class="badge b-grey">${items.length}</span></div><div class="pb">${items.map(c=>`<div class="pcard" onclick="viewChat('${c.id}')"><div class="nm">${esc(c.name)}</div><div class="sm">${esc((job(c.jobId)||{}).title||'')}</div></div>`).join('')||'<span class="hint">—</span>'}</div></div>`;}).join('')}</div>`;
+}
+
+/* ---- responses ---- */
+function renderResponses(v){
+  const pool=DB.candidates;
+  const stat=(n,l)=>`<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`;
+  const sched=pool.filter(c=>CH(c).stage==='scheduled').length, interested=pool.filter(c=>CH(c).answers.interested==='Yes').length, dropped=pool.filter(c=>['declined','location_dropout','notice_dropout'].includes(CH(c).stage)).length;
+  v.innerHTML=`<div class="between"><div><h1>Responses</h1><p class="sub">Every answer captured — switch between channels.</p></div>${chanToggle()}</div>
+  <div class="row" style="margin-bottom:18px">${stat(pool.length,'Candidates')}${stat(interested,'Interested')}${stat(sched,'Calls scheduled')}${stat(dropped,'Dropped off')}</div>
+  <div class="tablewrap"><table><thead><tr><th>Candidate</th><th>Job</th><th>Type</th><th>Interested</th><th>Current loc</th><th>Preferred loc</th><th>OK office</th><th>Experience</th><th>Current CTC</th><th>Expected CTC</th><th>Notice</th><th>Skill answers</th><th>Availability</th><th>📅 Calendar</th></tr></thead>
+  <tbody>${pool.filter(c=>CH(c).stage!=='new').map(c=>{const a=CH(c).answers;const j=job(c.jobId)||{};const avail=a.availability||[a.timeSlot,a.day].filter(Boolean).join(', ');const sk=(a.skills||[]).map(s=>s.a).filter(Boolean);const skCell=sk.length?`<span title="${esc((a.skills||[]).map(s=>s.q+': '+s.a).join(' | '))}">${sk.length} answer(s)</span>`:'—';return `<tr><td><b>${esc(c.name)}</b></td><td>${esc(j.title||'')}</td><td>${esc(j.roleType||'—')}</td><td>${esc(a.interested||'—')}</td><td>${esc(a.currentLocation||'—')}</td><td>${esc(a.preferredLocation||'—')}</td><td>${esc(a.workComfortable||'—')}</td><td>${esc(a.experience||'—')}</td><td>${esc(a.currentCTC||'—')}</td><td>${esc(a.expectedCTC||'—')}</td><td>${esc(a.noticePeriod||'—')}</td><td>${skCell}</td><td>${esc(avail||'—')}</td><td>${a.calendarLink?`<a href="${esc(a.calendarLink)}" target="_blank">📅 Add ↗</a>`:'—'}</td></tr>`;}).join('')||`<tr><td colspan="14" style="text-align:center;color:var(--muted);padding:30px">No responses yet on this channel.</td></tr>`}</tbody></table></div>
+  <div style="margin-top:14px"><button class="btn ghost sm" onclick="exportCSV()">⬇ Export all to Excel/CSV</button></div>`;
+}
+
+/* ---- flags ---- */
+function renderFlags(v){
+  const rows=[]; DB.candidates.forEach(c=>{c.wa.flags.forEach((f,i)=>rows.push({c,f,i,ch:'wa',label:'WhatsApp'}));(c.em&&c.em.flags||[]).forEach((f,i)=>rows.push({c,f,i,ch:'em',label:'Email'}));});
+  v.innerHTML=`<h1>Flagged questions</h1><p class="sub">Candidates who asked something outside the predefined templates — follow up manually.</p>
+  ${rows.length?rows.map(({c,f,i,ch,label})=>`<div class="card" style="margin-bottom:12px;${f.resolved?'opacity:.55':''}"><div class="between"><div><b>${esc(c.name)}</b> · <span class="hint">${esc((job(c.jobId)||{}).title||'')} · ${label}</span></div>${f.resolved?'<span class="badge b-green">Resolved</span>':`<button class="btn sec sm" onclick="resolveFlag('${c.id}','${ch}',${i})">Mark resolved</button>`}</div><div style="margin-top:8px">"${esc(f.q)}"</div><div style="margin-top:8px"><button class="btn ghost sm" onclick="viewChat('${c.id}')">View chat</button></div></div>`).join(''):`<div class="empty"><div class="big">✅</div>No flagged questions.</div>`}`;
+}
+async function resolveFlag(cid,ch,idx){await api('POST','/api/flags/resolve',{candId:cid,channel:ch,idx});await reload();}
+async function sendManual(cid){const inp=document.getElementById('manualMsg');const t=inp.value.trim();if(!t)return;inp.value='';const r=await api('POST','/api/send',{candId:cid,text:t});if(r.error)return toast('⚠️ '+r.error);await reload();viewChat(cid);}
+
+/* ---- WhatsApp connect modal ---- */
+function openConnect(){
+  const o=document.getElementById('overlay');
+  const render=()=>{
+    let body;
+    if(STATUS.waStatus==='ready') body=`<div class="qrbox"><div style="font-size:40px">✅</div><h2>Connected</h2><p class="modalsub">Sending from <b>+${esc(STATUS.connectedAs||'')}</b>. You're ready to RUN jobs.</p></div>`;
+    else if(STATUS.qr) body=`<div class="qrbox"><img src="${STATUS.qr}"><div><b>Scan to connect your WhatsApp</b></div><p class="modalsub" style="max-width:380px">On your phone: <b>WhatsApp → Settings → Linked Devices → Link a Device</b>, then point your camera at this code. (Refreshes automatically.)</p></div>`;
+    else body=`<div class="qrbox"><div style="font-size:34px">⏳</div><h2>Starting WhatsApp…</h2><p class="modalsub">Generating your QR code, one moment.</p></div>`;
+    o.innerHTML=`<div class="overlay" onclick="if(event.target===this)closeOverlay()"><div class="modal"><div class="between"><h2>WhatsApp connection</h2><button class="x" onclick="closeOverlay()">×</button></div>
+      <div class="banner">⚠️ This drives your <b>personal</b> WhatsApp number, which is against WhatsApp's Terms — it can get the number banned. Use at your own risk.</div>
+      ${body}
+      <div style="margin-top:16px"><div class="hint" style="margin-bottom:5px">Activity log</div><div class="logbox" id="logbox">${(STATUS.logs||[]).join('\n')||'…'}</div></div></div></div>`;
+  };
+  render();
+  clearInterval(window._connT);
+  window._connT=setInterval(async()=>{ if(!document.getElementById('overlay').innerHTML){clearInterval(window._connT);return;} await refresh(); render(); const lb=document.getElementById('logbox'); if(lb)lb.scrollTop=lb.scrollHeight; },2000);
+}
+
+/* ---- chat viewer (both channels) ---- */
+function chatColumn(c,which){
+  const ch=which==='wa'?c.wa:(c.em||{transcript:[],stage:'new'});
+  const head=which==='wa'?`🟢 WhatsApp · ${esc(c.phone||'—')}`:`✉️ Email · ${esc(c.email||'—')}`;
+  const body=ch.transcript.length?ch.transcript.map(m=>`<div class="bub ${m.from==='system'?'sys':'cand'}">${esc(m.text)}</div>`).join(''):'<div class="hint" style="text-align:center">No messages yet.</div>';
+  const manual=which==='wa'?`<div style="display:flex;gap:6px;margin-top:8px"><input id="manualMsg" placeholder="Reply manually…" style="flex:1;background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:8px 10px" onkeydown="if(event.key==='Enter')sendManual('${c.id}')"><button class="btn sm" onclick="sendManual('${c.id}')">Send</button></div>`:`<p class="hint" style="margin-top:8px">Email replies are handled automatically when the candidate replies to the email.</p>`;
+  return `<div style="flex:1;min-width:260px"><div style="font-weight:700;font-size:13px;margin-bottom:6px">${head} · ${badge(ch.stage||'new')}</div>
+    <div class="chatbody" style="max-height:380px">${body}</div>${manual}</div>`;
+}
+function viewChat(cid){
+  const c=cand(cid); if(!c)return; const j=job(c.jobId);
+  document.getElementById('overlay').innerHTML=`<div class="overlay" onclick="if(event.target===this)closeOverlay()"><div class="modal lg"><div class="between"><div><h2>${esc(c.name)}</h2><p class="modalsub">${esc(j.title)} · ${esc(c.phone||'')} · ${esc(c.email||'')}</p></div><button class="x" onclick="closeOverlay()">×</button></div>
+    <div class="row" style="gap:14px">${chatColumn(c,'wa')}${chatColumn(c,'em')}</div></div></div>`;
+  document.querySelectorAll('.chatbody').forEach(b=>b.scrollTop=b.scrollHeight);
+}
+
+/* ---- settings ---- */
+let SET={};
+async function renderSettings(v){
+  SET=await api('GET','/api/settings');
+  const calOk=STATUS.calendarConnected;
+  v.innerHTML=`<h1>Settings</h1><p class="sub">Configure email outreach and Google Calendar. These stay on this computer only.</p>
+  <div class="card" style="margin-bottom:16px"><h2 style="margin-bottom:4px">✉️ Email (Gmail / Google Workspace)</h2>
+    <p class="hint" style="margin-bottom:12px">Used to send outreach and read candidate replies. You need a <b>Google App Password</b> (not your normal password) — <a href="https://myaccount.google.com/apppasswords" target="_blank">create one here</a> with 2-Step Verification on, then paste the 16-character code.</p>
+    ${field('s_email','Your email address',SET.email,{type:'email',ph:'you@urbancompany.com'})}
+    <div class="field"><label>App password ${SET.emailPassSet?'<span class="badge b-green" style="margin-left:6px">saved</span>':''}</label><input id="s_emailpass" type="password" placeholder="${SET.emailPassSet?'•••••••• (leave blank to keep)':'16-character app password'}" style="background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:10px 11px;width:100%"></div>
+    <div class="toolbar"><button class="btn" onclick="saveEmail()">Save email</button><button class="btn sec" onclick="testEmail()">Send test email</button>
+      <span class="badge ${STATUS.emailReady?(STATUS.emailStatus==='error'?'b-red':'b-green'):'b-grey'}">${STATUS.emailReady?(STATUS.emailStatus==='error'?'Error — check password':'Ready'):'Not configured'}</span></div></div>
+
+  <div class="card"><h2 style="margin-bottom:4px">📅 Calendar — no setup needed ✅</h2>
+    <p class="hint" style="margin-bottom:10px">Whenever a candidate is scheduled, RecruitFlow automatically:</p>
+    <ul class="hint" style="margin:0 0 10px;padding-left:18px;line-height:1.8">
+      <li>Creates an <b>"Add to Calendar"</b> link (shown in the <b>Responses</b> tab) — one click opens Google Calendar pre-filled at the candidate's chosen day & time; you just hit <b>Save</b>.</li>
+      <li>${STATUS.emailReady ? 'Emails you a calendar invite (.ics) you can open in any calendar app.' : 'Will also email you a calendar invite once your email above is connected.'}</li>
+    </ul>
+    <p class="hint">No Google Cloud project or login required. The call lands at the exact day/time the candidate confirmed (within your 12 PM–5 PM calling hours).</p></div>`;
+}
+async function saveEmail(){await api('POST','/api/settings',{email:document.getElementById('s_email').value.trim(),emailPass:document.getElementById('s_emailpass').value});await refresh();toast('Email settings saved.');render();}
+async function testEmail(){await saveEmailQuiet();const r=await api('POST','/api/email/test');await refresh();r.error?toast('⚠️ '+r.error):toast('✅ Test email sent — check your inbox.');render();}
+async function saveEmailQuiet(){await api('POST','/api/settings',{email:document.getElementById('s_email').value.trim(),emailPass:document.getElementById('s_emailpass').value});}
+async function saveGoogle(){await api('POST','/api/settings',{googleClientId:document.getElementById('s_gid').value.trim(),googleClientSecret:document.getElementById('s_gsecret').value});await refresh();toast('Google credentials saved.');render();}
+async function connectGoogle(){await saveGoogle();const r=await api('GET','/api/google/connect');if(r.error)return toast('⚠️ '+r.error);window.open(r.url,'_blank');toast('Complete the Google login in the new tab, then come back.');}
+
+/* ---- forms ---- */
+function closeOverlay(){document.getElementById('overlay').innerHTML='';}
+function field(id,label,val,o){o=o||{};const v=val==null?'':val;
+  if(o.type==='textarea')return `<div class="field"><label>${label}</label><textarea id="${id}" placeholder="${o.ph||''}">${esc(v)}</textarea></div>`;
+  if(o.type==='select')return `<div class="field"><label>${label}</label><select id="${id}">${o.options.map(x=>`<option ${String(v)===String(x.v)?'selected':''} value="${esc(x.v)}">${esc(x.l)}</option>`).join('')}</select></div>`;
+  return `<div class="field"><label>${label}</label><input id="${id}" value="${esc(v)}" placeholder="${o.ph||''}" type="${o.type||'text'}"></div>`;}
+function jobForm(id){const j=id?job(id):{};document.getElementById('overlay').innerHTML=`<div class="overlay" onclick="if(event.target===this)closeOverlay()"><div class="modal"><div class="between"><h2>${id?'Edit job':'New job'}</h2><button class="x" onclick="closeOverlay()">×</button></div><p class="modalsub">Role details candidates are matched against.</p>
+  ${field('j_title','Job Title',j.title,{ph:'e.g. Senior Frontend Engineer'})}
+  <div class="f2">${field('j_dept','Department',j.department,{ph:'Engineering'})}${field('j_loc','Office Location (city)',j.location,{ph:'Bengaluru'})}</div>
+  ${field('j_jd','Job Description (short summary, optional)',j.jd,{type:'textarea',ph:'One or two lines — the full JD goes as a PDF below.'})}
+  <div class="field"><label>📄 Job Description PDF (sent to candidates as an attachment)</label>
+    <input type="file" id="j_jdfile" accept="application/pdf">
+    ${j.jdFile?`<div class="hint" style="margin-top:6px;display:flex;gap:10px;align-items:center">✅ Attached: <b>${esc(j.jdFileName||j.jdFile)}</b> <a style="color:#fca5a5;cursor:pointer" onclick="document.getElementById('j_removepdf').checked=true;this.parentNode.innerHTML='Will be removed on save.'">remove</a><input type="checkbox" id="j_removepdf" style="display:none"></div>`:`<input type="checkbox" id="j_removepdf" style="display:none"><p class="hint">No PDF yet. Candidates will get a short text overview instead.</p>`}</div>
+  <div class="f3">${field('j_exp','Experience',j.experience||'3-5',{type:'select',options:[{v:'0-1',l:'0-1 years'},{v:'1-3',l:'1-3 years'},{v:'3-5',l:'3-5 years'},{v:'5-8',l:'5-8 years'},{v:'8+',l:'8+ years'}]})}
+    ${field('j_days','Working Days',j.workingDays||5,{type:'select',options:[{v:5,l:'5 days'},{v:6,l:'6 days'}]})}
+    ${field('j_remote','Remote?',j.remote||'No',{type:'select',options:[{v:'No',l:'No'},{v:'Yes',l:'Yes'}]})}</div>
+  <div class="f2">${field('j_skills','Key Skills',j.skills,{ph:'React, TypeScript'})}${field('j_timeline','Hiring Timeline',j.timeline,{ph:'30 days'})}</div>
+  ${field('j_maxnotice','Maximum notice period (candidates above this are not scheduled)',j.maxNoticeDays==null?'':String(j.maxNoticeDays),{type:'select',options:[{v:'',l:'No limit'},{v:'0',l:'Immediate joiners only'},{v:'15',l:'Up to 15 days'},{v:'30',l:'Up to 30 days (1 month)'},{v:'45',l:'Up to 45 days'},{v:'60',l:'Up to 60 days (2 months)'},{v:'90',l:'Up to 90 days (3 months)'}]})}
+  <div class="field"><label>📝 Skill / evaluation questions for candidates (one per line)</label>
+    <textarea id="j_skillq" placeholder="e.g.\nHow would you grow a category's P&L?\nDescribe a tough vendor negotiation you led.">${esc((j.skillQuestions||[]).join('\n'))}</textarea>
+    <p class="hint">The bot asks each of these as an open question and records the answers for your review.</p></div>
+  <div class="between" style="margin-top:8px"><span></span><div class="toolbar"><button class="btn sec" onclick="closeOverlay()">Cancel</button><button class="btn" onclick="saveJob('${id||''}')">${id?'Save':'Create job'}</button></div></div></div></div>`;}
+async function saveJob(id){const g=i=>document.getElementById(i).value.trim();const title=g('j_title');if(!title)return toast('Job title required.');
+  const payload={id:id||undefined,title,department:g('j_dept'),location:g('j_loc'),jd:g('j_jd'),experience:g('j_exp'),workingDays:g('j_days'),remote:g('j_remote'),skills:g('j_skills'),timeline:g('j_timeline'),maxNoticeDays:document.getElementById('j_maxnotice').value,skillQuestions:document.getElementById('j_skillq').value.split('\n').map(s=>s.trim()).filter(Boolean)};
+  const rm=document.getElementById('j_removepdf'); if(rm&&rm.checked)payload.removeJdFile=true;
+  const f=document.getElementById('j_jdfile').files[0];
+  const send=async()=>{await api('POST','/api/jobs',payload);closeOverlay();await reload();toast(id?'Job updated.':'Job created.');};
+  if(f){ if(f.size>20*1024*1024)return toast('PDF too large (max 20MB).'); const r=new FileReader();r.onload=()=>{payload.jdFileData=String(r.result).split(',')[1];payload.jdFileName=f.name;send();};r.readAsDataURL(f);}
+  else send();}
+function candForm(jid){document.getElementById('overlay').innerHTML=`<div class="overlay" onclick="if(event.target===this)closeOverlay()"><div class="modal"><div class="between"><h2>Add candidate</h2><button class="x" onclick="closeOverlay()">×</button></div>
+  ${field('c_name','Full Name','',{ph:'Aarav Sharma'})}<div class="f2">${field('c_email','Email ID','',{type:'email',ph:'name@example.com'})}${field('c_phone','Phone (with country code)','',{ph:'+91 90000 00000'})}</div>
+  ${field('c_loc','Target Location (city hiring for)','',{ph:'Bengaluru'})}<p class="hint">10-digit numbers are assumed Indian (+91). Add a country code otherwise.</p>
+  <div class="between" style="margin-top:8px"><span></span><div class="toolbar"><button class="btn sec" onclick="closeOverlay()">Cancel</button><button class="btn" onclick="saveCand('${jid}')">Add</button></div></div></div></div>`;}
+async function saveCand(jid){const g=i=>document.getElementById(i).value.trim();if(!g('c_name'))return toast('Name required.');
+  await api('POST','/api/candidates',{jobId:jid,name:g('c_name'),email:g('c_email'),phone:g('c_phone'),targetLocation:g('c_loc')});
+  closeOverlay();await reload();toast('Candidate added.');}
+async function delCand(id){if(!confirm('Remove this candidate?'))return;await api('DELETE','/api/candidates/'+id);await reload();}
+function bulkForm(jid){document.getElementById('overlay').innerHTML=`<div class="overlay" onclick="if(event.target===this)closeOverlay()"><div class="modal"><div class="between"><h2>Bulk upload candidates</h2><button class="x" onclick="closeOverlay()">×</button></div>
+  <p class="modalsub">Upload a CSV (export Excel as .csv). Header row required: <code>Full Name, Email, Phone, Target Location</code></p>
+  <div class="field"><label>Choose CSV file</label><input type="file" id="bulkfile" accept=".csv,text/csv"></div>
+  <textarea id="bulkpaste" placeholder="…or paste rows here" style="width:100%;min-height:90px;background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:10px"></textarea>
+  <div class="between" style="margin-top:12px"><a class="hint" style="cursor:pointer;color:var(--brand2)" onclick="dlTemplate()">⬇ Download template</a><div class="toolbar"><button class="btn sec" onclick="closeOverlay()">Cancel</button><button class="btn" onclick="doBulk('${jid}')">Import</button></div></div></div></div>`;}
+function parseCSV(text){const rows=[];let row=[],cur='',q=false;for(let i=0;i<text.length;i++){const ch=text[i];if(q){if(ch==='"'){if(text[i+1]==='"'){cur+='"';i++;}else q=false;}else cur+=ch;}else{if(ch==='"')q=true;else if(ch===','){row.push(cur);cur='';}else if(ch==='\n'||ch==='\r'){if(ch==='\r'&&text[i+1]==='\n')i++;row.push(cur);rows.push(row);row=[];cur='';}else cur+=ch;}}if(cur!==''||row.length){row.push(cur);rows.push(row);}return rows.filter(r=>r.some(c=>c.trim()!==''));}
+async function doBulk(jid){const f=document.getElementById('bulkfile').files[0];const paste=document.getElementById('bulkpaste').value.trim();
+  const finish=async text=>{const rows=parseCSV(text);if(!rows.length)return toast('No rows found.');const head=rows[0].map(h=>h.trim().toLowerCase());const idx=(...n)=>head.findIndex(h=>n.some(x=>h.includes(x)));const ni=idx('name'),ei=idx('email','mail'),pi=idx('phone','mobile'),li=idx('location','city','target');
+    const out=rows.slice(1).map(r=>({name:(r[ni]||'').trim(),email:(r[ei]||'').trim(),phone:(r[pi]||'').trim(),targetLocation:(r[li]||'').trim()})).filter(r=>r.name);
+    const res=await api('POST','/api/candidates/bulk',{jobId:jid,rows:out});closeOverlay();await reload();toast(`Imported ${res.added} candidate(s).`);};
+  if(f){const r=new FileReader();r.onload=()=>finish(r.result);r.readAsText(f);}else if(paste)finish(paste);else toast('Choose a file or paste rows.');}
+function dlTemplate(){download('candidates_template.csv','Full Name,Email,Phone,Target Location\nAarav Sharma,aarav@example.com,+91 90000 00000,Bengaluru\n');}
+
+/* ---- export ---- */
+function csvCell(v){v=v==null?'':String(v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;}
+function exportCSV(jid){const list=jid?candsOf(jid):DB.candidates;const header=['Name','Email','Phone','Target Location','Job','Job Type','Channel','Stage','Interested','Current Location','Preferred Location','OK office','Experience','Current CTC','Expected CTC','Notice Period','Skill Answers','Availability','Calendar Link','Open Flags'];const rows=[header];
+  const rowFor=(c,ch,label)=>{const j=job(c.jobId),a=ch.answers||{};const avail=a.availability||[a.timeSlot,a.day].filter(Boolean).join(', ');const skills=(a.skills||[]).map(s=>s.q+': '+s.a).join(' | ');return [c.name,c.email,c.phone,c.targetLocation,j?j.title:'',j?j.roleType||'':'',label,(STAGE_META[ch.stage]||['?'])[0],a.interested||'',a.currentLocation||'',a.preferredLocation||'',a.workComfortable||'',a.experience||'',a.currentCTC||'',a.expectedCTC||'',a.noticePeriod||'',skills,avail,a.calendarLink||'',(ch.flags||[]).filter(f=>!f.resolved).length];};
+  list.forEach(c=>{if(c.wa.stage!=='new')rows.push(rowFor(c,c.wa,'WhatsApp'));if(c.em&&c.em.stage!=='new')rows.push(rowFor(c,c.em,'Email'));if(c.wa.stage==='new'&&(!c.em||c.em.stage==='new'))rows.push(rowFor(c,c.wa,'WhatsApp'));});
+  download((jid?'candidates':'all_responses')+'.csv',rows.map(r=>r.map(csvCell).join(',')).join('\n'));toast('CSV downloaded — open in Excel.');}
+function download(name,text){const blob=new Blob([text],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+
+/* ---- toast ---- */
+let toastT;function toast(m){let el=document.getElementById('toast');if(!el){el=document.createElement('div');el.id='toast';el.style.cssText='position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--brand);color:var(--txt);padding:11px 18px;border-radius:10px;z-index:99;font-size:13.5px;max-width:90vw;text-align:center';document.body.appendChild(el);}el.textContent=m;el.style.opacity='1';clearTimeout(toastT);toastT=setTimeout(()=>el.style.opacity='0',3200);}
+
+/* ---- boot ---- */
+(async()=>{ await refresh(); await reload(); if(STATUS.waStatus!=='ready')openConnect(); })();
+</script>
+</body>
+</html>
