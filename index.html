@@ -204,15 +204,15 @@ function pipeCol(c){
   if(s==='location_dropout'||s==='notice_dropout') return 'reject';   // criteria didn't fit
   if(s==='declined') return 'dropped';                                // said not interested
   if(isStalled(ch)) return 'dropped';                                 // stopped responding
-  if(['outreach','location','preflocation'].includes(s)) return 'outreach';
+  if(s==='outreach') return 'outreach';                               // outreach sent, awaiting first reply
   if(['avail','avail_time','avail_day'].includes(s)) return 'scheduling';
-  return 'discussion';   // workpref / experience / ctc / notice / skills / resume
+  return 'discussion';   // location / preflocation / workpref / experience / ctc / notice / skills / resume
 }
 function renderPipeline(v){
   const pool=UI.jobId?candsOf(UI.jobId):DB.candidates;
   v.innerHTML=`<div class="between"><div><h1>Pipeline</h1><p class="sub">Live stage of every candidate (updates as they reply).</p></div>
     <div class="toolbar">${chanToggle()}<select onchange="UI.jobId=this.value||null;render()" style="background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:8px 10px"><option value="">All jobs</option>${DB.jobs.map(j=>`<option value="${j.id}" ${UI.jobId===j.id?'selected':''}>${esc(j.title)}</option>`).join('')}</select></div></div>
-  <p class="hint" style="margin:-4px 0 12px">Dropped off = stopped replying or not interested · Reject = didn't meet the role criteria</p>
+  <p class="hint" style="margin:-4px 0 12px">Outreach = message sent, awaiting first reply · In discussion = candidate is answering · Dropped off = stopped replying or not interested · Reject = didn't meet the role criteria</p>
   <div class="pipe">${PCOLS.map(([key,title])=>{const items=pool.filter(c=>pipeCol(c)===key);
     return `<div class="pcol"><div class="ph">${esc(title)}<span class="badge b-grey">${items.length}</span></div><div class="pb">${items.map(c=>`<div class="pcard" onclick="viewChat('${c.id}')"><div class="nm">${esc(c.name)}</div><div class="sm">${esc((job(c.jobId)||{}).title||'')}</div></div>`).join('')||'<span class="hint">—</span>'}</div></div>`;}).join('')}</div>`;
 }
