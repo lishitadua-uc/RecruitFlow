@@ -248,6 +248,7 @@ function sideQuestion(c, ch, text, out, jump) {
 function handleIncoming(c, ch, text) {
   const j = jobOf(c), out = [];
   ch.transcript.push({ from: 'candidate', text, ts: now() });
+  ch.nudgeCount = 0;   // they replied — reset the 1-day follow-up counter
 
   if (ch.pending === 'last_working_day') {
     ch.pending = null;
@@ -620,6 +621,44 @@ async function checkEmailFollowups() {
   }
 }
 if (!process.env.RF_TEST) { setInterval(() => checkEmailFollowups().catch(() => {}), 30 * 60 * 1000); setTimeout(() => checkEmailFollowups().catch(() => {}), 20000); }
+
+/* ---------------- 1-day follow-up nudge (any unanswered message: outreach OR a question) ---------------- */
+const NUDGE_MS = 24 * 60 * 60 * 1000;   // nudge after 1 day of silence
+const MAX_NUDGES = 2;                    // at most 2 gentle reminders, then leave them be
+function nudgeText(c, n) {
+  if (n >= 1) return `Hi ${c.name}, just checking in once more 😊 — if now isn't the right time, no problem at all. Whenever you're ready, simply reply here and we'll pick up where we left off.`;
+  return `Hi ${c.name}! 👋 Just following up on my previous message — whenever you get a chance, I'd love to hear back from you. 😊`;
+}
+// Re-ping any candidate who hasn't replied to our last message for 1 day, on whichever channel that message went out.
+async function checkNudges() {
+  for (const c of db.candidates) {
+    for (const ch of [c.wa, c.em]) {
+      if (!ch || ch.stage === 'new' || isTerminal(ch.stage)) continue;
+      const t = ch.transcript || []; if (!t.length) continue;
+      const last = t[t.length - 1];
+      if (last.from !== 'system') continue;                                   // last word was ours; we're waiting on candidate
+      if ((ch.nudgeCount || 0) >= MAX_NUDGES) continue;                       // already nudged the max times
+      if (Date.now() - new Date(last.ts).getTime() < NUDGE_MS) continue;      // less than a day of silence
+      const isWA = (ch === c.wa);
+      const text = nudgeText(c, ch.nudgeCount || 0);
+      try {
+        if (isWA) {
+          if (waStatus !== 'ready') continue;
+          await client.sendMessage(c.wa.chatId || (normPhone(c.phone) + '@c.us'), text);
+        } else {
+          if (!mailerReady() || !c.email) continue;
+          await sendEmail(c.email, emailSubject(c), stripMd(text));
+        }
+        ch.nudgeCount = (ch.nudgeCount || 0) + 1; ch.lastNudgeAt = Date.now();
+        ch.transcript.push({ from: 'system', text, ts: now() });
+        save();
+        log(`🔔 1-day follow-up sent to ${c.name} (${isWA ? 'WhatsApp' : 'Email'}) [reminder #${ch.nudgeCount}]`);
+      } catch (e) { log(`Nudge failed for ${c.name}: ${e.message}`); }
+    }
+  }
+}
+if (!process.env.RF_TEST) { setInterval(() => checkNudges().catch(() => {}), 60 * 60 * 1000); setTimeout(() => checkNudges().catch(() => {}), 60000); }
+
 let emailPolling = false;
 async function pollEmail() {
   if (!mailerReady() || emailPolling) return;
