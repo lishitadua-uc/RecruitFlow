@@ -700,11 +700,37 @@ if (!process.env.RF_TEST) setInterval(() => { pollEmail().catch(() => {}); }, 20
 let waStatus = 'starting', qrDataUrl = null, waInfo = null;
 
 const client = new Client({ authStrategy: new LocalAuth({ dataPath: path.join(__dirname, '.wwebjs_auth') }), puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] } });
-client.on('qr', async qr => { waStatus = 'qr'; qrDataUrl = await QRCode.toDataURL(qr, { width: 320, margin: 1 }); log('QR generated — scan it from the dashboard.'); });
+client.on('qr', async qr => { clearWatchdog(); waStatus = 'qr'; qrDataUrl = await QRCode.toDataURL(qr, { width: 320, margin: 1 }); log('QR generated — scan it from the dashboard.'); });
 client.on('authenticated', () => { waStatus = 'authenticated'; });
-client.on('auth_failure', m => { waStatus = 'auth_failure'; log('Auth failure: ' + m); });
-client.on('ready', () => { waStatus = 'ready'; qrDataUrl = null; waInfo = client.info ? client.info.wid.user : null; log('WhatsApp READY. Connected as +' + (waInfo || '?')); setTimeout(() => catchUpWhatsApp(), 4000); });
-client.on('disconnected', r => { waStatus = 'disconnected'; log('Disconnected: ' + r); });
+client.on('auth_failure', m => { clearWatchdog(); waStatus = 'auth_failure'; log('Auth failure: ' + m); });
+client.on('ready', () => { clearWatchdog(); waStatus = 'ready'; qrDataUrl = null; waInfo = client.info ? client.info.wid.user : null; log('WhatsApp READY. Connected as +' + (waInfo || '?')); setTimeout(() => catchUpWhatsApp(), 4000); });
+client.on('disconnected', r => { waStatus = 'disconnected'; log('Disconnected: ' + r + ' — attempting to reconnect.'); recoverWhatsApp(); });
+
+/* --- Self-healing: remove stale Chrome locks + auto-recover if the client hangs --- */
+function clearChromeLocks() {
+  try {
+    const base = path.join(__dirname, '.wwebjs_auth');
+    if (!fs.existsSync(base)) return;
+    const walk = dir => { for (const f of fs.readdirSync(dir)) { const p = path.join(dir, f); let st; try { st = fs.lstatSync(p); } catch (e) { continue; } if (st.isDirectory()) walk(p); else if (/^Singleton/.test(f)) { try { fs.unlinkSync(p); } catch (e) {} } } };
+    walk(base);
+  } catch (e) {}
+}
+let waWatchdog = null, recovering = false;
+function clearWatchdog() { if (waWatchdog) { clearTimeout(waWatchdog); waWatchdog = null; } }
+function armWatchdog() {
+  clearWatchdog();
+  // If WhatsApp doesn't reach 'ready' or show a QR within 2 minutes, it's hung — recover.
+  waWatchdog = setTimeout(() => { if (waStatus !== 'ready' && waStatus !== 'qr') recoverWhatsApp(); }, 120000);
+}
+async function recoverWhatsApp() {
+  if (recovering) return; recovering = true;
+  log(`⚠️ WhatsApp stuck/dropped at "${waStatus}" — auto-recovering…`);
+  try { await client.destroy(); } catch (e) {}
+  clearChromeLocks();
+  try { waStatus = 'starting'; await client.initialize(); armWatchdog(); }
+  catch (e) { log('Recovery failed: ' + e.message + (process.env.RF_MANAGED ? ' — exiting for auto-restart.' : '')); if (process.env.RF_MANAGED) process.exit(1); }
+  finally { recovering = false; }
+}
 
 async function resolveNumber(msg) {
   let num = '';
@@ -763,7 +789,7 @@ client.on('message', async msg => {
     log(`▶ Replied to ${c.name} → now [${STAGE_LABEL[c.wa.stage]}]`);
   } catch (e) { log('handler error: ' + e.message); }
 });
-if (!process.env.RF_TEST) { log('Starting WhatsApp client…'); client.initialize(); }
+if (!process.env.RF_TEST) { clearChromeLocks(); log('Starting WhatsApp client…'); client.initialize(); armWatchdog(); }
 module.exports = { detectInterest, detectComfort, detectExperience, detectRole, detectSlot, detectDay, handleIncoming, db };
 
 /* ---------------- Send outreach (RUN) ---------------- */
