@@ -187,12 +187,33 @@ async function runJob(jid){
 }
 
 /* ---- pipeline ---- */
-const PCOLS=[['new','Not started'],[['outreach','location','preflocation'],'Outreach / Location'],[['workpref','experience','role','currentctc','expectedctc','notice','skills'],'Qualifying'],[['avail','avail_time','avail_day'],'Scheduling'],['scheduled','Scheduled ✓'],[['declined','location_dropout','notice_dropout'],'Dropped off']];
+const PCOLS=[['new','Not started'],['outreach','Outreach'],['discussion','In discussion'],['scheduling','Scheduling'],['scheduled','Scheduled ✓'],['dropped','Dropped off'],['reject','Reject']];
+const STALL_DAYS=3;
+// A candidate has "stopped responding" if they're mid-conversation, the last message was ours, and 3+ days have passed.
+function isStalled(ch){
+  if(!ch||['new','scheduled','declined','location_dropout','notice_dropout'].includes(ch.stage)) return false;
+  const t=ch.transcript||[]; if(!t.length) return false;
+  const last=t[t.length-1]; if(last.from!=='system') return false;
+  return (Date.now()-new Date(last.ts).getTime())>STALL_DAYS*864e5;
+}
+// Map a candidate to exactly one pipeline column.
+function pipeCol(c){
+  const ch=CH(c),s=ch.stage;
+  if(s==='new') return 'new';
+  if(s==='scheduled') return 'scheduled';
+  if(s==='location_dropout'||s==='notice_dropout') return 'reject';   // criteria didn't fit
+  if(s==='declined') return 'dropped';                                // said not interested
+  if(isStalled(ch)) return 'dropped';                                 // stopped responding
+  if(['outreach','location','preflocation'].includes(s)) return 'outreach';
+  if(['avail','avail_time','avail_day'].includes(s)) return 'scheduling';
+  return 'discussion';   // workpref / experience / ctc / notice / skills / resume
+}
 function renderPipeline(v){
   const pool=UI.jobId?candsOf(UI.jobId):DB.candidates;
   v.innerHTML=`<div class="between"><div><h1>Pipeline</h1><p class="sub">Live stage of every candidate (updates as they reply).</p></div>
     <div class="toolbar">${chanToggle()}<select onchange="UI.jobId=this.value||null;render()" style="background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:8px 10px"><option value="">All jobs</option>${DB.jobs.map(j=>`<option value="${j.id}" ${UI.jobId===j.id?'selected':''}>${esc(j.title)}</option>`).join('')}</select></div></div>
-  <div class="pipe">${PCOLS.map(([key,title])=>{const keys=Array.isArray(key)?key:[key];const items=pool.filter(c=>keys.includes(CH(c).stage));
+  <p class="hint" style="margin:-4px 0 12px">Dropped off = stopped replying or not interested · Reject = didn't meet the role criteria</p>
+  <div class="pipe">${PCOLS.map(([key,title])=>{const items=pool.filter(c=>pipeCol(c)===key);
     return `<div class="pcol"><div class="ph">${esc(title)}<span class="badge b-grey">${items.length}</span></div><div class="pb">${items.map(c=>`<div class="pcard" onclick="viewChat('${c.id}')"><div class="nm">${esc(c.name)}</div><div class="sm">${esc((job(c.jobId)||{}).title||'')}</div></div>`).join('')||'<span class="hint">—</span>'}</div></div>`;}).join('')}</div>`;
 }
 
@@ -200,9 +221,9 @@ function renderPipeline(v){
 function renderResponses(v){
   const pool=DB.candidates;
   const stat=(n,l)=>`<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`;
-  const sched=pool.filter(c=>CH(c).stage==='scheduled').length, interested=pool.filter(c=>CH(c).answers.interested==='Yes').length, dropped=pool.filter(c=>['declined','location_dropout','notice_dropout'].includes(CH(c).stage)).length;
+  const sched=pool.filter(c=>CH(c).stage==='scheduled').length, interested=pool.filter(c=>CH(c).answers.interested==='Yes').length, dropped=pool.filter(c=>pipeCol(c)==='dropped').length, rejected=pool.filter(c=>pipeCol(c)==='reject').length;
   v.innerHTML=`<div class="between"><div><h1>Responses</h1><p class="sub">Every answer captured — switch between channels.</p></div>${chanToggle()}</div>
-  <div class="row" style="margin-bottom:18px">${stat(pool.length,'Candidates')}${stat(interested,'Interested')}${stat(sched,'Calls scheduled')}${stat(dropped,'Dropped off')}</div>
+  <div class="row" style="margin-bottom:18px">${stat(pool.length,'Candidates')}${stat(interested,'Interested')}${stat(sched,'Calls scheduled')}${stat(dropped,'Dropped off')}${stat(rejected,'Reject')}</div>
   <div class="tablewrap"><table><thead><tr><th>Candidate</th><th>Job</th><th>Type</th><th>Interested</th><th>Current loc</th><th>Preferred loc</th><th>OK office</th><th>Experience</th><th>Current CTC</th><th>Expected CTC</th><th>Notice</th><th>Skill answers</th><th>Availability</th><th>📅 Calendar</th></tr></thead>
   <tbody>${pool.filter(c=>CH(c).stage!=='new').map(c=>{const a=CH(c).answers;const j=job(c.jobId)||{};const avail=a.availability||[a.timeSlot,a.day].filter(Boolean).join(', ');const sk=(a.skills||[]).map(s=>s.a).filter(Boolean);const skCell=sk.length?`<span title="${esc((a.skills||[]).map(s=>s.q+': '+s.a).join(' | '))}">${sk.length} answer(s)</span>`:'—';return `<tr><td><b>${esc(c.name)}</b></td><td>${esc(j.title||'')}</td><td>${esc(j.roleType||'—')}</td><td>${esc(a.interested||'—')}</td><td>${esc(a.currentLocation||'—')}</td><td>${esc(a.preferredLocation||'—')}</td><td>${esc(a.workComfortable||'—')}</td><td>${esc(a.experience||'—')}</td><td>${esc(a.currentCTC||'—')}</td><td>${esc(a.expectedCTC||'—')}</td><td>${esc(a.noticePeriod||'—')}</td><td>${skCell}</td><td>${esc(avail||'—')}</td><td>${a.calendarLink?`<a href="${esc(a.calendarLink)}" target="_blank">📅 Add ↗</a>`:'—'}</td></tr>`;}).join('')||`<tr><td colspan="14" style="text-align:center;color:var(--muted);padding:30px">No responses yet on this channel.</td></tr>`}</tbody></table></div>
   <div style="margin-top:14px"><button class="btn ghost sm" onclick="exportCSV()">⬇ Export all to Excel/CSV</button></div>`;
