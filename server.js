@@ -8,7 +8,7 @@
    WARNING: automating a personal number breaks WhatsApp ToS (ban risk).
 ============================================================ */
 const express = require('express');
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const { Client, LocalAuth, MessageMedia, Poll } = require('whatsapp-web.js');
 const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
@@ -814,6 +814,44 @@ async function resolveNumber(msg) {
   if (!num) num = (msg.from.split('@')[0] || '').replace(/\D/g, '');
   return num;
 }
+/* ---------------- WhatsApp polls (hybrid: tappable options for choice questions) ---------------- */
+// Which stages are sent as a tappable poll (rest stay as open text). Returns {name, options} or null.
+function pollForStage(stage, c, j) {
+  switch (stage) {
+    case 'outreach':   return { name: `Are you open to exploring this ${j ? j.title : ''} opportunity? 😊`, options: ['Yes, tell me more 👍', 'Not right now'] };
+    case 'workpref':   return { name: `This role is in ${j ? j.location : ''} — ${j ? j.workingDays : ''} days/week from office${j && j.remote === 'No' ? ' (no remote option)' : ''}. Are you comfortable with this?`, options: ['Yes, I\'m comfortable', 'No, that won\'t work'] };
+    case 'experience': return { name: 'How many years of work experience do you have?', options: ['0–2 years', '3–5 years', '5–8 years', '8+ years'] };
+    case 'notice':     return { name: 'What is your notice period?', options: ['Immediate', '15 days', '30 days', '60 days', '90+ days', 'Currently serving notice'] };
+    default: return null;
+  }
+}
+// Translate a chosen poll option back into text the conversation engine understands.
+function voteToAnswer(stage, optionName) {
+  const o = optionName || '';
+  if (stage === 'outreach' || stage === 'workpref') return /^yes/i.test(o) ? 'yes' : 'no';
+  if (stage === 'experience') return ({ '0–2 years': '2 years', '3–5 years': '4 years', '5–8 years': '6 years', '8+ years': '9 years' })[o] || o;
+  if (stage === 'notice') {
+    if (/serving/i.test(o)) return 'serving notice';
+    return ({ 'Immediate': 'immediate', '15 days': '15 days', '30 days': '30 days', '60 days': '60 days', '90+ days': '90 days' })[o] || o;
+  }
+  return o;
+}
+// Send the engine's replies to a candidate on WhatsApp — as a poll when the new stage is poll-able, else as text.
+async function sendRepliesWA(c, replies) {
+  const ch = c.wa, j = jobOf(c), to = ch.chatId || (normPhone(c.phone) + '@c.us');
+  const poll = pollForStage(ch.stage, c, j);
+  const promptText = poll ? stripMd(stagePrompt(ch.stage, c, j)) : null;
+  for (const r of (replies || [])) {
+    if (poll && stripMd(r) === promptText) continue;        // skip the text prompt; the poll replaces it
+    try { await client.sendMessage(to, r); } catch (e) { log('WA send failed: ' + e.message); }
+    await new Promise(r => setTimeout(r, 600));
+  }
+  if (poll && ch.activePoll !== ch.stage) {
+    try { await client.sendMessage(to, new Poll(poll.name, poll.options, { allowMultipleAnswers: false })); ch.activePoll = ch.stage; save(); }
+    catch (e) { log('Poll send failed (' + e.message + ') — falling back to text.'); try { await client.sendMessage(to, stripMd(stagePrompt(ch.stage, c, j))); } catch (e2) {} }
+  }
+}
+
 // Catch up on messages that arrived while this laptop/app was off (runs when WhatsApp becomes ready).
 async function catchUpWhatsApp() {
   try {
@@ -827,7 +865,7 @@ async function catchUpWhatsApp() {
         if (!m.body) continue;
         log(`⏳ Catch-up — ${c.name}: ${m.body.slice(0, 40)}`);
         const replies = handleIncoming(c, c.wa, m.body);
-        for (const t of replies) { try { await chat.sendMessage(t); } catch (e) {} await new Promise(r => setTimeout(r, 600)); }
+        await sendRepliesWA(c, replies);
         c.wa.lastProcessedTs = m.timestamp * 1000;
       }
       save();
@@ -855,10 +893,32 @@ client.on('message', async msg => {
     c.wa.lastProcessedTs = (msg.timestamp ? msg.timestamp * 1000 : Date.now());
     save();
     log(`◀ ${c.name} [match:${how}] +${num}: ${msg.body.slice(0, 60)}`);
+    c.wa.activePoll = null;   // they replied with text; any open poll is superseded
     const replies = handleIncoming(c, c.wa, msg.body);
-    for (const text of replies) { await msg.reply(text); await new Promise(r => setTimeout(r, 700)); }
+    await sendRepliesWA(c, replies);
     log(`▶ Replied to ${c.name} → now [${STAGE_LABEL[c.wa.stage]}]`);
   } catch (e) { log('handler error: ' + e.message); }
+});
+
+// Candidate tapped a poll option → translate it to an answer and drive the flow.
+client.on('vote_update', async (vote) => {
+  try {
+    const sel = (vote && vote.selectedOptions) || [];
+    if (!sel.length) return;                                  // vote was removed/cleared
+    const pm = vote.parentMessage || {};
+    const chatId = pm.to || pm.from;                          // the chat our poll was sent into
+    const voterNum = ((vote.voter || '').split('@')[0] || '').replace(/\D/g, '');
+    let c = db.candidates.find(x => x.wa.stage !== 'new' && x.wa.chatId && x.wa.chatId === chatId);
+    if (!c && voterNum) c = db.candidates.find(x => x.wa.stage !== 'new' && last10(x.phone) === voterNum.slice(-10));
+    if (!c) { log(`🗳️ Poll vote from unknown chat — ignored.`); return; }
+    if (!c.wa.activePoll) return;                             // no poll we're waiting on (avoids re-processing old polls)
+    const answer = voteToAnswer(c.wa.activePoll, sel[0].name);
+    log(`🗳️ ${c.name} voted "${sel[0].name}" → ${answer} [${c.wa.activePoll}]`);
+    c.wa.activePoll = null;
+    const replies = handleIncoming(c, c.wa, answer);
+    await sendRepliesWA(c, replies);
+    log(`▶ Replied to ${c.name} → now [${STAGE_LABEL[c.wa.stage]}]`);
+  } catch (e) { log('vote handler error: ' + e.message); }
 });
 if (!process.env.RF_TEST) startWhatsApp();
 module.exports = { detectInterest, detectComfort, detectExperience, detectRole, detectSlot, detectDay, handleIncoming, db };
@@ -874,6 +934,13 @@ async function sendWhatsAppOutreachTo(c, j, media) {
   if (media) { await new Promise(r => setTimeout(r, 600)); await client.sendMessage(jid2, media, { caption: `📄 ${j.title} — Job Description`, sendMediaAsDocument: true }); }
   c.wa.stage = 'outreach'; c.wa.outreachSentAt = Date.now(); c.wa.transcript.push({ from: 'system', text, ts: now() });
   if (media) c.wa.transcript.push({ from: 'system', text: `📄 [Sent JD attachment: ${j.jdFileName || j.jdFile}]`, ts: now() });
+  // Tappable interest poll (they can also just reply with text).
+  try {
+    const ip = pollForStage('outreach', c, j);
+    await new Promise(r => setTimeout(r, 600));
+    await client.sendMessage(jid2, new Poll(ip.name, ip.options, { allowMultipleAnswers: false }));
+    c.wa.chatId = c.wa.chatId || jid2; c.wa.activePoll = 'outreach';
+  } catch (e) { log('Interest poll failed for ' + c.name + ': ' + e.message); }
   log(`  ✓ Sent to ${c.name} (+${normPhone(c.phone)})`);
 }
 function loadJDMedia(j) { if (j && j.jdFile) { try { return MessageMedia.fromFilePath(path.join(UP_DIR, j.jdFile)); } catch (e) { log('JD file load failed: ' + e.message); } } return null; }
