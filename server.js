@@ -892,7 +892,7 @@ async function sendRepliesWA(c, replies) {
     await new Promise(r => setTimeout(r, 600));
   }
   if (poll && ch.activePoll !== ch.stage) {
-    try { await client.sendMessage(to, new Poll(poll.name, poll.options, { allowMultipleAnswers: false })); ch.activePoll = ch.stage; save(); }
+    try { const pm = await client.sendMessage(to, new Poll(poll.name, poll.options, { allowMultipleAnswers: false })); ch.activePoll = ch.stage; ch.activePollMsgId = pm && pm.id ? pm.id._serialized : null; save(); }
     catch (e) { log('Poll send failed (' + e.message + ') — falling back to text.'); try { await client.sendMessage(to, stripMd(stagePrompt(ch.stage, c, j))); } catch (e2) {} }
   }
 }
@@ -951,18 +951,23 @@ client.on('vote_update', async (vote) => {
     const sel = (vote && vote.selectedOptions) || [];
     if (!sel.length) return;                                  // vote was removed/cleared
     const pm = vote.parentMessage || {};
-    const chatId = pm.to || pm.from;                          // the chat our poll was sent into
+    const pmId = (pm.id && (pm.id._serialized || pm.id.id)) || null;
+    const chatId = (pm.id && pm.id.remote) || pm.to || pm.from || (pm.from);
     const voterNum = ((vote.voter || '').split('@')[0] || '').replace(/\D/g, '');
-    let c = db.candidates.find(x => x.wa.stage !== 'new' && x.wa.chatId && x.wa.chatId === chatId);
+    // Diagnostics so we can see exactly what WhatsApp sends.
+    log(`🗳️ vote_update: opt="${sel.map(s => s.name).join(',')}" voter=${vote.voter || '?'} pmId=${pmId || '?'} chat=${chatId || '?'}`);
+    // Primary match: the exact poll message we sent. Fallbacks: pinned chat, then number.
+    let c = pmId ? db.candidates.find(x => x.wa.activePollMsgId && x.wa.activePollMsgId === pmId) : null;
+    if (!c && chatId) c = db.candidates.find(x => x.wa.stage !== 'new' && x.wa.chatId === chatId);
     if (!c && voterNum) c = db.candidates.find(x => x.wa.stage !== 'new' && last10(x.phone) === voterNum.slice(-10));
-    if (!c) { log(`🗳️ Poll vote from unknown chat — ignored.`); return; }
-    if (!c.wa.activePoll) return;                             // no poll we're waiting on (avoids re-processing old polls)
+    if (!c) { log(`🗳️ Poll vote unmatched — ignored.`); return; }
+    if (!c.wa.activePoll) { log(`🗳️ ${c.name}: no active poll, ignoring stale vote.`); return; }
     const answer = voteToAnswer(c.wa.activePoll, sel[0].name);
-    log(`🗳️ ${c.name} voted "${sel[0].name}" → ${answer} [${c.wa.activePoll}]`);
-    c.wa.activePoll = null;
+    log(`🗳️ ${c.name} voted "${sel[0].name}" → "${answer}" [${c.wa.activePoll}]`);
+    c.wa.activePoll = null; c.wa.activePollMsgId = null;
     const replies = handleIncoming(c, c.wa, answer);
     await sendRepliesWA(c, replies);
-    log(`▶ Replied to ${c.name} → now [${STAGE_LABEL[c.wa.stage]}]`);
+    log(`▶ Replied to ${c.name} → now [${STAGE_LABEL[c.wa.stage] || c.wa.stage}]`);
   } catch (e) { log('vote handler error: ' + e.message); }
 });
 if (!process.env.RF_TEST) startWhatsApp();
@@ -983,8 +988,8 @@ async function sendWhatsAppOutreachTo(c, j, media) {
   try {
     const ip = pollForStage('outreach', c, j);
     await new Promise(r => setTimeout(r, 600));
-    await client.sendMessage(jid2, new Poll(ip.name, ip.options, { allowMultipleAnswers: false }));
-    c.wa.chatId = c.wa.chatId || jid2; c.wa.activePoll = 'outreach';
+    const pm = await client.sendMessage(jid2, new Poll(ip.name, ip.options, { allowMultipleAnswers: false }));
+    c.wa.chatId = c.wa.chatId || jid2; c.wa.activePoll = 'outreach'; c.wa.activePollMsgId = pm && pm.id ? pm.id._serialized : null;
   } catch (e) { log('Interest poll failed for ' + c.name + ': ' + e.message); }
   log(`  ✓ Sent to ${c.name} (+${normPhone(c.phone)})`);
 }
