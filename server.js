@@ -716,7 +716,10 @@ client.on('auth_failure', m => { clearWatchdog(); waStatus = 'auth_failure'; log
 client.on('ready', () => { clearWatchdog(); waStatus = 'ready'; qrDataUrl = null; waInfo = client.info ? client.info.wid.user : null; log('WhatsApp READY. Connected as +' + (waInfo || '?')); setTimeout(() => catchUpWhatsApp(), 4000); });
 client.on('disconnected', r => { waStatus = 'disconnected'; log('Disconnected: ' + r + ' — attempting to reconnect.'); recoverWhatsApp(); });
 
-/* --- Self-healing: remove stale Chrome locks + auto-recover if the client hangs --- */
+/* --- Self-healing: guarantee a clean Chrome on every start, auto-recover if the client hangs --- */
+const { execSync } = require('child_process');
+// Kill any leftover headless Chrome from a previous run (only this app uses "Chrome for Testing").
+function killStaleChrome() { try { execSync('pkill -9 -f "Chrome for Testing"', { stdio: 'ignore' }); } catch (e) {} }
 function clearChromeLocks() {
   try {
     const base = path.join(__dirname, '.wwebjs_auth');
@@ -725,20 +728,26 @@ function clearChromeLocks() {
     walk(base);
   } catch (e) {}
 }
+// Run a guaranteed-clean WhatsApp startup: clear any leftover Chrome + locks, then initialize.
+function startWhatsApp() { killStaleChrome(); clearChromeLocks(); log('Starting WhatsApp client…'); client.initialize(); armWatchdog(); }
 let waWatchdog = null, recovering = false;
 function clearWatchdog() { if (waWatchdog) { clearTimeout(waWatchdog); waWatchdog = null; } }
 function armWatchdog() {
   clearWatchdog();
-  // If WhatsApp doesn't reach 'ready' or show a QR within 2 minutes, it's hung — recover.
-  waWatchdog = setTimeout(() => { if (waStatus !== 'ready' && waStatus !== 'qr') recoverWhatsApp(); }, 120000);
+  // If WhatsApp doesn't reach 'ready' or show a QR within 90s, it's hung — recover.
+  waWatchdog = setTimeout(() => { if (waStatus !== 'ready' && waStatus !== 'qr') recoverWhatsApp(); }, 90000);
 }
 async function recoverWhatsApp() {
   if (recovering) return; recovering = true;
   log(`⚠️ WhatsApp stuck/dropped at "${waStatus}" — auto-recovering…`);
+  // Under launchd (auto-start), a full process restart is the most reliable reset — startup then
+  // kills stale Chrome and begins clean. KeepAlive brings us back within ~10s.
+  if (process.env.RF_MANAGED) { log('  → restarting process for a clean slate.'); try { await client.destroy(); } catch (e) {} killStaleChrome(); process.exit(1); }
+  // Manual run (no launchd): recover in-process.
   try { await client.destroy(); } catch (e) {}
-  clearChromeLocks();
+  killStaleChrome(); clearChromeLocks();
   try { waStatus = 'starting'; await client.initialize(); armWatchdog(); }
-  catch (e) { log('Recovery failed: ' + e.message + (process.env.RF_MANAGED ? ' — exiting for auto-restart.' : '')); if (process.env.RF_MANAGED) process.exit(1); }
+  catch (e) { log('Recovery failed: ' + e.message); }
   finally { recovering = false; }
 }
 
@@ -799,7 +808,7 @@ client.on('message', async msg => {
     log(`▶ Replied to ${c.name} → now [${STAGE_LABEL[c.wa.stage]}]`);
   } catch (e) { log('handler error: ' + e.message); }
 });
-if (!process.env.RF_TEST) { clearChromeLocks(); log('Starting WhatsApp client…'); client.initialize(); armWatchdog(); }
+if (!process.env.RF_TEST) startWhatsApp();
 module.exports = { detectInterest, detectComfort, detectExperience, detectRole, detectSlot, detectDay, handleIncoming, db };
 
 /* ---------------- Send outreach (RUN) ---------------- */
