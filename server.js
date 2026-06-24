@@ -121,6 +121,16 @@ function detectAck(t) {
   t = (t || '').trim(); if (!t) return false;
   return /^([\s.,!👍🙏😊👌✅]*(thanks?|thank you|thankyou|tysm|ty|ok(?:ay)?|okk+|kk?|great|cool|sure|done|got it|noted|perfect|awesome|nice|good|alright|all good|no problem|np|welcome|bye|cheers|👍|🙏|👌|✅))+[\s.,!👍🙏😊👌✅]*$/i.test(t);
 }
+// Candidate wants to change/cancel their scheduled call.
+function wantsReschedule(t) {
+  return /\b(reschedul|re-?schedul|postpone|change.*(time|slot|date|call)|different (time|slot|day)|another (time|slot|day)|can'?t make|cannot make|won'?t make|move (the )?call|new (time|slot)|shift the call)/i.test(t || '');
+}
+// Is this message actually about the role / hiring process (vs. casual chit-chat)?
+// Used after a candidate is finished (scheduled/declined) so we don't reply to random messages.
+function isRecruitmentRelevant(t) {
+  const kw = /\b(role|job|position|vacanc|ctc|salary|package|compensation|stipend|hike|location|office|onsite|on-site|remote|hybrid|wfh|notice period|joining|join date|offer|interview|recruiter|\bhr\b|opportunit|j\.?d\b|description|profile|hiring|process|shortlist|selected|next round|next step|timing|slot|schedule|call|meeting|appointment|reschedul|experience|skill|company|team|work)\b/i;
+  return /\?/.test(t || '') ? kw.test(t) : false;   // must be a question AND mention something role-related
+}
 function detectNoticeDays(t) {
   const tl = t.toLowerCase();
   if (/\b(immediate|immediately|right away|asap|available now|no notice|none|already serving|serving now|can join now|0\s*days?)\b/.test(tl)) return 0;
@@ -292,9 +302,23 @@ function handleIncoming(c, ch, text) {
   }
 
   if (ch.stage === 'new' || isTerminal(ch.stage)) {
-    if (detectAck(text)) out.push("You're welcome! 😊 You're all set — our recruiter will be in touch. Have a great day!");
-    else askQuestion(c, ch, text, out);
-    return finish(ch, out);
+    // Candidate is finished (scheduled / declined / dropped). Only respond to messages that are actually
+    // relevant to the role or the call — otherwise stay silent (no replies to casual chit-chat).
+    if (wantsReschedule(text) && ch.stage === 'scheduled') {
+      ch.activePoll = null; ch.activePollMsgId = null; ch.answers.scheduledStartISO = null; ch.answers.scheduledEndISO = null;
+      ch.stage = 'availdate';
+      out.push(`Sure — let's find a new time. 🙂`);
+      out.push(stagePrompt('availdate', c, jobOf(c)));
+      return finish(ch, out);
+    }
+    if (detectAck(text)) {
+      if (!ch.terminalAcked) { ch.terminalAcked = true; out.push("You're welcome! 😊 You're all set — our recruiter will be in touch. Have a great day!"); }
+      return finish(ch, out);   // don't keep replying to repeated "thanks/ok"
+    }
+    if (isRecruitmentRelevant(text)) { askQuestion(c, ch, text, out); return finish(ch, out); }
+    // Irrelevant chatter → record it but send no reply.
+    ch.ignoredCount = (ch.ignoredCount || 0) + 1;
+    return finish(ch, out);   // out is empty → nothing sent
   }
 
   switch (ch.stage) {
@@ -792,7 +816,8 @@ async function pollEmail() {
           replies = handleIncoming(c, c.em, body);
         }
         for (const r of replies) await sendEmail(c.email, emailSubject(c), stripMd(r));
-        log(`📧 ▶ Replied to ${c.name} → [${STAGE_LABEL[c.em.stage] || c.em.stage}]`);
+        if (replies && replies.length) log(`📧 ▶ Replied to ${c.name} → [${STAGE_LABEL[c.em.stage] || c.em.stage}]`);
+        else log(`🤐 ${c.name} (email): not relevant — no reply sent.`);
       }
     } finally { lock.release(); }
   } catch (e) { emailStatus = 'error'; log('IMAP error: ' + e.message); }
@@ -941,7 +966,8 @@ client.on('message', async msg => {
     c.wa.activePoll = null;   // they replied with text; any open poll is superseded
     const replies = handleIncoming(c, c.wa, msg.body);
     await sendRepliesWA(c, replies);
-    log(`▶ Replied to ${c.name} → now [${STAGE_LABEL[c.wa.stage]}]`);
+    if (replies && replies.length) log(`▶ Replied to ${c.name} → now [${STAGE_LABEL[c.wa.stage] || c.wa.stage}]`);
+    else log(`🤐 ${c.name}: message not relevant to recruitment — no reply sent.`);
   } catch (e) { log('handler error: ' + e.message); }
 });
 
