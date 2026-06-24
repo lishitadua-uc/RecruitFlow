@@ -36,7 +36,7 @@ const last10 = p => normPhone(p).slice(-10);
 const EXP = ['0-1 years', '1-3 years', '3-5 years', '5-8 years', '8+ years'];
 const ROLE = ['Individual Contributor', 'Team Lead / Senior', 'Manager', 'Fresher / Looking for first role', 'Other'];
 const TIME = ['Morning (9 AM - 12 PM)', 'Afternoon (12 PM - 3 PM)', 'Evening (3 PM - 6 PM)'];
-const STAGE_LABEL = { new: 'Not started', outreach: 'Outreach sent', details_form: 'Details form sent', location: 'Asked location', preflocation: 'Preferred location', workpref: 'Work preference', experience: 'Experience', role: 'Current role', currentctc: 'Current CTC', expectedctc: 'Expected CTC', notice: 'Notice period', skills: 'Skill questions', resume: 'Resume request', avail: 'Scheduling', avail_time: 'Scheduling', avail_day: 'Scheduling', scheduled: 'Call scheduled ✓', declined: 'Not interested', location_dropout: 'Location mismatch', notice_dropout: 'Notice too long' };
+const STAGE_LABEL = { new: 'Not started', outreach: 'Outreach sent', details_form: 'Details form sent', location: 'Asked location', preflocation: 'Preferred location', workpref: 'Work preference', experience: 'Experience', role: 'Current role', currentctc: 'Current CTC', expectedctc: 'Expected CTC', notice: 'Notice period', skills: 'Skill questions', resume: 'Resume request', avail: 'Scheduling', availdate: 'Scheduling', availtime: 'Scheduling', avail_time: 'Scheduling', avail_day: 'Scheduling', scheduled: 'Call scheduled ✓', declined: 'Not interested', location_dropout: 'Location mismatch', notice_dropout: 'Notice too long' };
 const isTerminal = s => ['scheduled', 'declined', 'location_dropout', 'notice_dropout'].includes(s);
 
 // Classify a job as Managerial (Senior Manager & above) or Individual Contributor, from its title.
@@ -160,6 +160,31 @@ function parseTimeHour(t) {
   return null;
 }
 function fmtHour(h, m) { const ap = h >= 12 ? 'PM' : 'AM'; let hh = h % 12; if (hh === 0) hh = 12; return hh + (m ? (':' + String(m).padStart(2, '0')) : '') + ' ' + ap; }
+
+/* ---------------- Scheduling: real dates from tomorrow + fixed time slots ---------------- */
+const WDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const MONTHS_FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+function fmtDateOpt(d) { return `${WDAYS[d.getDay()]} - ${d.getDate()} ${MONTHS_FULL[d.getMonth()]}`; }   // "Thursday - 25 June"
+// The next 5 dates starting tomorrow.
+function availDateOptions() {
+  const opts = [], base = new Date();
+  for (let i = 1; i <= 5; i++) { const d = new Date(base); d.setDate(d.getDate() + i); d.setHours(0, 0, 0, 0); opts.push({ label: fmtDateOpt(d), date: d }); }
+  return opts;
+}
+const TIME_SLOTS = [
+  { label: '11 AM – 12 PM', start: 11 }, { label: '12 PM – 1 PM', start: 12 }, { label: '1 PM – 2 PM', start: 13 },
+  { label: '2 PM – 3 PM', start: 14 }, { label: '3 PM – 4 PM', start: 15 }, { label: '4 PM – 5 PM', start: 16 },
+];
+// Match a chosen/typed time to a slot (slot label, or any hour that falls in a slot's start).
+function matchTimeSlot(text) {
+  const t = (text || '').toLowerCase();
+  for (const s of TIME_SLOTS) if (t.includes(s.label.toLowerCase()) || t.replace(/\s/g, '').includes(s.label.toLowerCase().replace(/\s/g, ''))) return s;
+  const tm = parseTimeHour(text);
+  if (tm) { const s = TIME_SLOTS.find(x => x.start === tm.hour); if (s) return s; }
+  return null;
+}
+// Extract a positive number from a CTC answer; returns null if none. Used to make CTC mandatory (and reject 0).
+function parseAmount(text) { const m = (text || '').match(/\d+(?:\.\d+)?/); return m ? parseFloat(m[0]) : null; }
 // Parse a loose date string to a future Date (for "last working day").
 function parseDateLoose(t) {
   t = (t || '').toLowerCase(); const now = new Date();
@@ -200,11 +225,13 @@ function stagePrompt(stage, c, j) {
     case 'preflocation': return `Got it! And which location would you *prefer* to work in?`;
     case 'workpref': return `This role is based in *${j.location}* and requires *${j.workingDays} days/week from office*.${j.remote === 'No' ? ' There is no remote option for this role.' : ''}\n\nAre you comfortable with this?`;
     case 'experience': return `How many years of *experience* do you have?`;
-    case 'currentctc': return `Could you share your *current CTC* (annual)?\n\nIf you'd rather not disclose, just say "skip" and we'll move on. 😊`;
-    case 'expectedctc': return `And your *expected CTC*? (Feel free to skip this too if you're not comfortable.)`;
+    case 'currentctc': return `Could you share your *current CTC* (annual, in LPA)? Please reply with a number — e.g. "12" or "12 LPA". (Required to proceed.)`;
+    case 'expectedctc': return `And your *expected CTC* (annual, in LPA)? Please reply with a number — e.g. "15". (Required to proceed.)`;
     case 'notice': return `What is your *notice period*? (for example: "immediate", "30 days", or "2 months")`;
     case 'resume': return `One last thing — do you have an *updated resume* you'd like to share? You can paste a Google Drive link or any public link. If not, just say *"skip"* and we'll move on. 📄`;
-    case 'avail': return `Brilliant! 🎉 We'd love to connect you with our recruiter for a quick chat.\n\nPlease share your *availability* — your preferred day and time over the next 2-3 days. Our recruiters call between *12 PM and 5 PM*, so do pick a slot in that window. 🕘`;
+    case 'avail':
+    case 'availdate': return `Brilliant! 🎉 Let's set up your call. Which *date* works best for you?\n\n${availDateOptions().map(o => '• ' + o.label).join('\n')}\n\n(Reply with a date, e.g. "25 June".)`;
+    case 'availtime': return `Great! And which *time slot* suits you?\n\n${TIME_SLOTS.map(s => '• ' + s.label).join('\n')}\n\n(Reply with a slot, e.g. "3 PM".)`;
   }
   return '';
 }
@@ -303,14 +330,16 @@ function handleIncoming(c, ch, text) {
       break;
     }
     case 'currentctc': {
-      if (detectSkip(text)) { ch.answers.currentCTC = 'Prefer not to disclose'; advance(c, ch, 'expectedctc', out); break; }
       if (!/\d/.test(text) && questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('currentctc', c, j)); break; }
+      const amt = parseAmount(text);
+      if (amt === null || amt === 0) { out.push(`To proceed, please share your *current CTC* as a number greater than 0 — e.g. "12" or "12 LPA". This field is required. 🙏`); break; }
       ch.answers.currentCTC = text.trim(); advance(c, ch, 'expectedctc', out);
       break;
     }
     case 'expectedctc': {
-      if (detectSkip(text)) { ch.answers.expectedCTC = 'Prefer not to disclose'; advance(c, ch, 'notice', out); break; }
       if (!/\d/.test(text) && questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('expectedctc', c, j)); break; }
+      const amt = parseAmount(text);
+      if (amt === null || amt === 0) { out.push(`To proceed, please share your *expected CTC* as a number greater than 0 — e.g. "15" or "15 LPA". This field is required. 🙏`); break; }
       ch.answers.expectedCTC = text.trim(); advance(c, ch, 'notice', out);
       break;
     }
@@ -343,24 +372,34 @@ function handleIncoming(c, ch, text) {
     case 'resume': {
       if (detectSkip(text)) { ch.answers.resume = 'Not shared'; }
       else { ch.answers.resume = text.trim(); }
-      advance(c, ch, 'avail', out);
+      advance(c, ch, 'availdate', out);
       break;
     }
-    case 'avail': {
-      const dayTok = extractDay(text), tm = parseTimeHour(text);
-      if (questionLike(text) && !dayTok && !tm) { askQuestion(c, ch, text, out); out.push(stagePrompt('avail', c, j)); break; }
-      if (dayTok) ch.answers.availDay = dayTok;
-      if (tm && (tm.hour < CALL_START || tm.hour > CALL_END)) {   // outside calling hours
-        out.push(`Our recruiters call between *12 PM and 5 PM*. Could you share a time within that window? (e.g. "3 pm") 🕘`); break;
-      }
-      if (tm) { ch.answers._h = tm.hour; ch.answers._m = tm.min || 0; }
-      const haveDay = !!ch.answers.availDay, haveTime = (ch.answers._h != null);
-      if (haveDay && haveTime) {
-        ch.answers.availability = `${ch.answers.availDay} ${fmtHour(ch.answers._h, ch.answers._m)}`;   // schedule ONLY with both day + time
-        confirmSchedule(c, ch, out);
-      } else if (haveDay) { out.push(`Thanks! And what *time* works best? Our recruiters call between *12 PM and 5 PM* — e.g. "3 pm". 🕘`); }
-      else if (haveTime) { out.push(`Got it! And which *day* works for you? (e.g. "tomorrow" or "Friday") 📅`); }
-      else { out.push(`I'll need a specific *day and time* to book the call (calling hours are *12 PM–5 PM*). For example: "Friday 3 pm". 📅`); }
+    case 'avail':         // legacy stage → treat as date selection
+    case 'availdate': {
+      if (questionLike(text) && !parseDateLoose(text)) { askQuestion(c, ch, text, out); out.push(stagePrompt('availdate', c, j)); break; }
+      const d = parseDateLoose(text);
+      if (!d) { out.push(`Please pick a *date* for the call. ${availDateOptions().map(o => '• ' + o.label).join('  ')}`); break; }
+      ch.answers._dateISO = d.toISOString();
+      ch.answers._dateLabel = fmtDateOpt(d);
+      const slotSame = matchTimeSlot(text);   // if they gave a time too (e.g. "Friday 3 PM"), use it now
+      if (slotSame) {
+        const start = new Date(d); start.setHours(slotSame.start, 0, 0, 0);
+        ch.answers.scheduledStartISO = start.toISOString();
+        ch.answers.scheduledEndISO = new Date(start.getTime() + 60 * 60000).toISOString();
+        ch.answers.availability = `${ch.answers._dateLabel}, ${slotSame.label}`;
+        ch.stage = 'availtime'; confirmSchedule(c, ch, out);
+      } else { advance(c, ch, 'availtime', out); }
+      break;
+    }
+    case 'availtime': {
+      const slot = matchTimeSlot(text);
+      if (!slot) { out.push(`Please pick a *time slot*: ${TIME_SLOTS.map(s => s.label).join('  •  ')}`); break; }
+      const start = new Date(ch.answers._dateISO || Date.now()); start.setHours(slot.start, 0, 0, 0);
+      ch.answers.scheduledStartISO = start.toISOString();
+      ch.answers.scheduledEndISO = new Date(start.getTime() + 60 * 60000).toISOString();
+      ch.answers.availability = `${ch.answers._dateLabel}, ${slot.label}`;
+      confirmSchedule(c, ch, out);
       break;
     }
   }
@@ -424,7 +463,10 @@ function eventDetailsCandidate(c, ch) {
   return `Your call with the ${db.company} recruiter for the ${j ? j.title : ''} role.\n\nWhen: ${ch.answers.availability}\nPlease keep your phone handy — our recruiter will call you. We look forward to speaking with you!`;
 }
 // The call slot (30 min) from the candidate's stated availability.
-function callSlot(ch) { const { start, uncertain } = parseAvailabilityToDate(ch.answers.availability); return { start, end: new Date(start.getTime() + 30 * 60000), uncertain }; }
+function callSlot(ch) {
+  if (ch.answers.scheduledStartISO) { const start = new Date(ch.answers.scheduledStartISO); const end = ch.answers.scheduledEndISO ? new Date(ch.answers.scheduledEndISO) : new Date(start.getTime() + 60 * 60000); return { start, end, uncertain: false }; }
+  const { start, uncertain } = parseAvailabilityToDate(ch.answers.availability); return { start, end: new Date(start.getTime() + 30 * 60000), uncertain };
+}
 // Build a Google Calendar "add event" link (pre-filled). No API/OAuth needed — works for anyone.
 function gcalLink(title, details, location, start, end) {
   const f = d => `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}T${pad2(d.getHours())}${pad2(d.getMinutes())}00`;
@@ -533,7 +575,7 @@ async function sendEmailOutreachTo(c) {
   let qNum = 7;
   let skillLines = qs.map((q, i) => `${qNum + i}. ${q}:`).join('\n');
   const resumeNum = qNum + qs.length;
-  const body = `Hi ${c.name}!\n\nI'm reaching out from ${db.company}. We came across your profile and think you could be a great fit for our ${j.title} role${j.location ? ` based in ${j.location}` : ''}.\n\n${j.jdFile ? `The full job description is attached — please take a look.\n\n` : ''}If you're interested, please reply to this email with the following details:\n\n──────────────────────\n1. Current city (where you're based now):\n2. Preferred work location:\n3. Total years of experience:\n4. Current CTC (or type "skip"):\n5. Expected CTC (or type "skip"):\n6. Notice period (e.g. "immediate", "30 days", "2 months"):\n${skillLines ? skillLines + '\n' : ''}${resumeNum}. Resume: Please attach your updated resume, or type "no resume" if not available.\n──────────────────────\n\nIf you're not actively looking right now, no worries — feel free to reach out on this email once you are.\n\nWarm regards,\n${db.company} Talent Team`;
+  const body = `Hi ${c.name}!\n\nI'm reaching out from ${db.company}. We came across your profile and think you could be a great fit for our ${j.title} role${j.location ? ` based in ${j.location}` : ''}.\n\n${j.jdFile ? `The full job description is attached — please take a look.\n\n` : ''}If you're interested, please reply to this email with the following details:\n\n──────────────────────\n1. Current city (where you're based now):\n2. Preferred work location:\n3. Total years of experience:\n4. Current CTC (annual, in LPA — required, a number):\n5. Expected CTC (annual, in LPA — required, a number):\n6. Notice period (e.g. "immediate", "30 days", "2 months"):\n${skillLines ? skillLines + '\n' : ''}${resumeNum}. Resume: Please attach your updated resume, or type "no resume" if not available.\n──────────────────────\n\nIf you're not actively looking right now, no worries — feel free to reach out on this email once you are.\n\nWarm regards,\n${db.company} Talent Team`;
   await sendEmail(c.email, subject, body, attach);
   c.em.stage = 'details_form'; c.em.transcript.push({ from: 'system', text: body, ts: now() }); save();
   return true;
@@ -822,6 +864,9 @@ function pollForStage(stage, c, j) {
     case 'workpref':   return { name: `This role is in ${j ? j.location : ''} — ${j ? j.workingDays : ''} days/week from office${j && j.remote === 'No' ? ' (no remote option)' : ''}. Are you comfortable with this?`, options: ['Yes, I\'m comfortable', 'No, that won\'t work'] };
     case 'experience': return { name: 'How many years of work experience do you have?', options: ['0–2 years', '3–5 years', '5–8 years', '8+ years'] };
     case 'notice':     return { name: 'What is your notice period?', options: ['Immediate', '15 days', '30 days', '60 days', '90+ days', 'Currently serving notice'] };
+    case 'avail':
+    case 'availdate':  return { name: 'Which date works best for a quick call? 📅', options: availDateOptions().map(o => o.label) };
+    case 'availtime':  return { name: 'And which time slot suits you? 🕘', options: TIME_SLOTS.map(s => s.label) };
     default: return null;
   }
 }

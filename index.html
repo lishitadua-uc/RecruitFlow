@@ -221,7 +221,7 @@ function pipeCol(c){
   if(s==='declined') return 'dropped';                                // said not interested
   if(isStalled(ch)) return 'dropped';                                 // stopped responding
   if(s==='outreach') return 'outreach';                               // outreach sent, awaiting first reply
-  if(['avail','avail_time','avail_day'].includes(s)) return 'scheduling';
+  if(['avail','availdate','availtime','avail_time','avail_day'].includes(s)) return 'scheduling';
   return 'discussion';   // location / preflocation / workpref / experience / ctc / notice / skills / resume
 }
 function renderPipeline(v){
