@@ -233,8 +233,9 @@ function enterSkills(c, ch, out) {
 function advance(c, ch, stage, out) { ch.stage = stage; out.push(stagePrompt(stage, c, jobOf(c))); }
 function confirmSchedule(c, ch, out) {
   ch.stage = 'scheduled';
-  out.push(`Perfect! ✅ I've noted your availability: *${ch.answers.availability}*. Our recruiter will reach out to confirm the call. Please keep your phone handy — looking forward to connecting you! 📞`);
-  onScheduled(c, ch);   // fire calendar event (async, non-blocking)
+  onScheduled(c, ch);   // build calendar links + email invites to both parties
+  const link = ch.answers.candidateCalendarLink;
+  out.push(`Perfect! ✅ I've noted your availability: *${ch.answers.availability}*. Our recruiter will reach out to confirm the call. Please keep your phone handy — looking forward to connecting you! 📞` + (link ? `\n\n📅 Add this call to your calendar: ${link}` : ''));
 }
 function askQuestion(c, ch, text, out) { const m = matchTemplate(text, jobOf(c)); out.push(m.resp); if (m.flagged) ch.flags.push({ q: text, ts: now(), resolved: false }); return m.flagged; }
 // Side-question mid-flow. If unknown and `jump` allowed, answer with fallback and route to scheduling.
@@ -417,39 +418,63 @@ function eventDetails(c, ch, uncertain) {
   const j = jobOf(c), a = ch.answers;
   return `Candidate: ${c.name}\nPhone: ${c.phone || '-'}\nEmail: ${c.email || '-'}\nRole: ${j ? j.title : ''} (${j ? j.roleType : ''})\n\nStated availability: ${a.availability}\nCurrent location: ${a.currentLocation || '-'}\nPreferred location: ${a.preferredLocation || '-'}\nExperience: ${a.experience || '-'}\nCurrent CTC: ${a.currentCTC || '-'}\nExpected CTC: ${a.expectedCTC || '-'}\nNotice: ${a.noticePeriod || '-'}\nSkill answers: ${(a.skills || []).map(s => s.q + ' → ' + s.a).join(' | ') || '-'}` + (uncertain ? `\n\n(Time was ESTIMATED from the candidate's text — please verify.)` : '');
 }
-// Build a Google Calendar "add event" link (pre-filled, opens ready to Save). No API/OAuth needed.
-function buildGcalUrl(c, ch) {
-  const j = jobOf(c), { start, uncertain } = parseAvailabilityToDate(ch.answers.availability);
-  const end = new Date(start.getTime() + 30 * 60000);
-  const f = d => `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}T${pad2(d.getHours())}${pad2(d.getMinutes())}00`;
-  const params = new URLSearchParams({ action: 'TEMPLATE', text: `Recruiter call: ${c.name} — ${j ? j.title : ''}`, dates: `${f(start)}/${f(end)}`, details: eventDetails(c, ch, uncertain), location: (j && j.location) || '' });
-  return { url: `https://calendar.google.com/calendar/render?${params.toString()}`, start, end, uncertain };
-}
-// Build an .ics calendar invite the recruiter can open/import.
-function buildICS(c, ch, start, end, uncertain) {
+// Candidate-facing event description (clean — no internal CTC / screening notes).
+function eventDetailsCandidate(c, ch) {
   const j = jobOf(c);
+  return `Your call with the ${db.company} recruiter for the ${j ? j.title : ''} role.\n\nWhen: ${ch.answers.availability}\nPlease keep your phone handy — our recruiter will call you. We look forward to speaking with you!`;
+}
+// The call slot (30 min) from the candidate's stated availability.
+function callSlot(ch) { const { start, uncertain } = parseAvailabilityToDate(ch.answers.availability); return { start, end: new Date(start.getTime() + 30 * 60000), uncertain }; }
+// Build a Google Calendar "add event" link (pre-filled). No API/OAuth needed — works for anyone.
+function gcalLink(title, details, location, start, end) {
+  const f = d => `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}T${pad2(d.getHours())}${pad2(d.getMinutes())}00`;
+  const params = new URLSearchParams({ action: 'TEMPLATE', text: title, dates: `${f(start)}/${f(end)}`, details: details, location: location || '' });
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+// Build an .ics calendar INVITE (METHOD:REQUEST) with organizer + attendees, so email clients add it directly.
+function buildICS(c, ch, start, end, opts) {
   const u = d => `${d.getUTCFullYear()}${pad2(d.getUTCMonth() + 1)}${pad2(d.getUTCDate())}T${pad2(d.getUTCHours())}${pad2(d.getUTCMinutes())}00Z`;
   const esc = s => String(s || '').replace(/([,;\\])/g, '\\$1').replace(/\n/g, '\\n');
-  return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//RecruitFlow//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'BEGIN:VEVENT',
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//RecruitFlow//EN', 'CALSCALE:GREGORIAN', `METHOD:${opts.method || 'REQUEST'}`, 'BEGIN:VEVENT',
     `UID:${c.id}-${start.getTime()}@recruitflow`, `DTSTAMP:${u(new Date())}`, `DTSTART:${u(start)}`, `DTEND:${u(end)}`,
-    `SUMMARY:${esc('Recruiter call: ' + c.name + ' — ' + (j ? j.title : ''))}`, `DESCRIPTION:${esc(eventDetails(c, ch, uncertain))}`,
-    `LOCATION:${esc((j && j.location) || '')}`, 'BEGIN:VALARM', 'TRIGGER:-PT30M', 'ACTION:DISPLAY', 'DESCRIPTION:Reminder', 'END:VALARM', 'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
+    `SUMMARY:${esc(opts.summary)}`, `DESCRIPTION:${esc(opts.description)}`, `LOCATION:${esc(opts.location || '')}`, 'STATUS:CONFIRMED', 'SEQUENCE:0'];
+  if (opts.organizerEmail) lines.push(`ORGANIZER;CN=${esc(db.company)}:mailto:${opts.organizerEmail}`);
+  (opts.attendees || []).forEach(a => { if (a) lines.push(`ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=${esc(a)}:mailto:${a}`); });
+  lines.push('BEGIN:VALARM', 'TRIGGER:-PT30M', 'ACTION:DISPLAY', 'DESCRIPTION:Reminder', 'END:VALARM', 'END:VEVENT', 'END:VCALENDAR');
+  return lines.join('\r\n');
 }
-// On scheduling: store an Add-to-Calendar link (always works) and email an .ics invite if email is set up.
+// On scheduling: build add-to-calendar links for BOTH parties and email proper invites (.ics) to each.
 function onScheduled(c, ch) {
   if (ch.calendarDone) return;
   ch.calendarDone = true;
   try {
-    const g = buildGcalUrl(c, ch);
-    ch.answers.calendarLink = g.url; save();
-    log(`📅 Add-to-Calendar link ready for ${c.name} (${ch.answers.availability})${g.uncertain ? ' [time estimated]' : ''}`);
+    const j = jobOf(c), { start, end, uncertain } = callSlot(ch);
+    const loc = (j && j.location) || '';
+    const recTitle = `Recruiter call: ${c.name} — ${j ? j.title : ''}`;
+    const candTitle = `Call with ${db.company} — ${j ? j.title : ''} role`;
+    const recDetails = eventDetails(c, ch, uncertain);
+    const candDetails = eventDetailsCandidate(c, ch);
+    // Add-to-calendar links (one-tap, works with no setup)
+    ch.answers.calendarLink = gcalLink(recTitle, recDetails, loc, start, end);              // recruiter view
+    ch.answers.candidateCalendarLink = gcalLink(candTitle, candDetails, loc, start, end);    // candidate view
+    save();
+    log(`📅 Calendar links ready for ${c.name} (${ch.answers.availability})${uncertain ? ' [time estimated]' : ''}`);
     if (mailerReady()) {
-      const ics = buildICS(c, ch, g.start, g.end, g.uncertain);
-      const body = `${c.name} has scheduled a recruiter call.\n\nWhen: ${ch.answers.availability}\nRole: ${(jobOf(c) || {}).title || ''}\nPhone: ${c.phone || '-'}\n\nAdd to Google Calendar: ${g.url}\n\n(A calendar invite is attached — open it to add to any calendar app.)`;
-      sendEmail(db.settings.email, `📅 Recruiter call scheduled — ${c.name}`, body, [{ filename: 'invite.ics', content: ics, contentType: 'text/calendar' }])
-        .then(() => log(`📧 Calendar invite emailed to ${db.settings.email}`)).catch(e => log('Invite email failed: ' + e.message));
+      const org = db.settings.email;
+      // → Recruiter invite (full internal details, candidate listed as attendee)
+      const recIcs = buildICS(c, ch, start, end, { summary: recTitle, description: recDetails, location: loc, organizerEmail: org, attendees: [org, c.email].filter(Boolean) });
+      const recBody = `${c.name} has scheduled a recruiter call.\n\nWhen: ${ch.answers.availability}\nRole: ${j ? j.title : ''}\nPhone: ${c.phone || '-'}\nEmail: ${c.email || '-'}\n\nAdd to your calendar: ${ch.answers.calendarLink}\n\n(A calendar invite is attached — open it to add to any calendar app.)`;
+      sendEmail(org, `📅 Recruiter call scheduled — ${c.name}`, recBody, [{ filename: 'invite.ics', content: recIcs, contentType: 'text/calendar; method=REQUEST' }])
+        .then(() => log(`📧 Calendar invite emailed to recruiter (${org})`)).catch(e => log('Recruiter invite email failed: ' + e.message));
+      // → Candidate invite (clean details), only if they have an email
+      if (c.email) {
+        const candIcs = buildICS(c, ch, start, end, { summary: candTitle, description: candDetails, location: loc, organizerEmail: org, attendees: [c.email] });
+        const candBody = `Hi ${c.name},\n\nYour call with the ${db.company} recruiter is confirmed for ${ch.answers.availability}.\n\nAdd it to your calendar: ${ch.answers.candidateCalendarLink}\n\n(A calendar invite is attached too — open it to add the call to any calendar app.)\n\nLooking forward to speaking with you!\n\n${db.company} Talent Team`;
+        sendEmail(c.email, `📅 Your call with ${db.company} — ${ch.answers.availability}`, candBody, [{ filename: 'invite.ics', content: candIcs, contentType: 'text/calendar; method=REQUEST' }])
+          .then(() => log(`📧 Calendar invite emailed to candidate (${c.email})`)).catch(e => log('Candidate invite email failed: ' + e.message));
+      }
     }
-  } catch (e) { ch.calendarDone = false; log('Calendar link error for ' + c.name + ': ' + e.message); }
+  } catch (e) { ch.calendarDone = false; log('Calendar error for ' + c.name + ': ' + e.message); }
 }
 
 /* ---------------- Email channel (SMTP send + IMAP read) ---------------- */
