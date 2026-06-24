@@ -496,6 +496,16 @@ async function runEmailJob(jid) {
   }
   return { sent, failed };
 }
+// Send the email outreach to a SINGLE candidate.
+async function runEmailOne(candId) {
+  if (!mailerReady()) throw new Error('Email not set up. Add your Gmail + app password in Settings.');
+  const c = db.candidates.find(x => x.id === candId);
+  if (!c) throw new Error('Candidate not found.');
+  if (!c.email) throw new Error('This candidate has no email address.');
+  if (c.em.stage !== 'new') throw new Error('Email outreach already sent to this candidate.');
+  await sendEmailOutreachTo(c);
+  return { sent: 1, name: c.name };
+}
 // Parse a candidate's one-shot reply to the details-form email (all fields in one message).
 function parseFormReply(text, j) {
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
@@ -793,6 +803,20 @@ if (!process.env.RF_TEST) { clearChromeLocks(); log('Starting WhatsApp client…
 module.exports = { detectInterest, detectComfort, detectExperience, detectRole, detectSlot, detectDay, handleIncoming, db };
 
 /* ---------------- Send outreach (RUN) ---------------- */
+// Send WhatsApp outreach to ONE candidate. Throws on failure. media is optional (loaded once by the caller).
+async function sendWhatsAppOutreachTo(c, j, media) {
+  if (c.wa.stage !== 'new') throw new Error('already contacted on WhatsApp');
+  const text = outreachText(c, j), jid2 = normPhone(c.phone) + '@c.us';
+  const ok = await client.isRegisteredUser(jid2);
+  if (!ok) throw new Error('not on WhatsApp');
+  await client.sendMessage(jid2, text);
+  if (media) { await new Promise(r => setTimeout(r, 600)); await client.sendMessage(jid2, media, { caption: `📄 ${j.title} — Job Description`, sendMediaAsDocument: true }); }
+  c.wa.stage = 'outreach'; c.wa.outreachSentAt = Date.now(); c.wa.transcript.push({ from: 'system', text, ts: now() });
+  if (media) c.wa.transcript.push({ from: 'system', text: `📄 [Sent JD attachment: ${j.jdFileName || j.jdFile}]`, ts: now() });
+  log(`  ✓ Sent to ${c.name} (+${normPhone(c.phone)})`);
+}
+function loadJDMedia(j) { if (j && j.jdFile) { try { return MessageMedia.fromFilePath(path.join(UP_DIR, j.jdFile)); } catch (e) { log('JD file load failed: ' + e.message); } } return null; }
+
 async function runJob(jid) {
   if (waStatus !== 'ready') throw new Error('WhatsApp is not connected yet. Scan the QR first.');
   const j = db.jobs.find(x => x.id === jid);
@@ -800,24 +824,25 @@ async function runJob(jid) {
   const fresh = list.filter(c => c.wa.stage === 'new');
   log(`▶ RUN WhatsApp for "${j ? j.title : jid}": ${fresh.length} new candidate(s) of ${list.length} total.`);
   if (!fresh.length) log('  (Everyone here has already been contacted on WhatsApp — nothing to send.)');
-  let media = null;
-  if (j && j.jdFile) { try { media = MessageMedia.fromFilePath(path.join(UP_DIR, j.jdFile)); } catch (e) { log('JD file load failed: ' + e.message); } }
+  const media = loadJDMedia(j);
   for (const c of list) {
     if (c.wa.stage !== 'new') continue;
-    const text = outreachText(c, j), jid2 = normPhone(c.phone) + '@c.us';
-    try {
-      const ok = await client.isRegisteredUser(jid2);
-      if (!ok) { failed.push(c.name + ' (not on WhatsApp)'); log(`  ✗ ${c.name} (${jid2}) — not registered on WhatsApp`); continue; }
-      await client.sendMessage(jid2, text);
-      if (media) { await new Promise(r => setTimeout(r, 600)); await client.sendMessage(jid2, media, { caption: `📄 ${j.title} — Job Description`, sendMediaAsDocument: true }); }
-      c.wa.stage = 'outreach'; c.wa.outreachSentAt = Date.now(); c.wa.transcript.push({ from: 'system', text, ts: now() });
-      if (media) c.wa.transcript.push({ from: 'system', text: `📄 [Sent JD attachment: ${j.jdFileName || j.jdFile}]`, ts: now() });
-      sent++; log(`  ✓ Sent to ${c.name} (+${normPhone(c.phone)})`); await new Promise(r => setTimeout(r, 1200));
-    } catch (e) { failed.push(c.name + ' (' + e.message + ')'); log(`  ✗ ${c.name} — ${e.message}`); }
+    try { await sendWhatsAppOutreachTo(c, j, media); sent++; await new Promise(r => setTimeout(r, 1200)); }
+    catch (e) { failed.push(c.name + ' (' + e.message + ')'); log(`  ✗ ${c.name} — ${e.message}`); }
   }
   save();
   log(`▶ RUN done: ${sent} sent, ${failed.length} skipped.`);
   return { sent, failed };
+}
+// Run WhatsApp outreach for a SINGLE candidate.
+async function runJobOne(candId) {
+  if (waStatus !== 'ready') throw new Error('WhatsApp is not connected yet. Scan the QR first.');
+  const c = db.candidates.find(x => x.id === candId);
+  if (!c) throw new Error('Candidate not found.');
+  const j = jobOf(c);
+  await sendWhatsAppOutreachTo(c, j, loadJDMedia(j));
+  save();
+  return { sent: 1, name: c.name };
 }
 
 /* ---------------- REST API + dashboard ---------------- */
@@ -881,6 +906,9 @@ app.post('/api/candidates/bulk', (req, res) => { const { jobId, rows } = req.bod
 app.delete('/api/candidates/:id', (req, res) => { db.candidates = db.candidates.filter(c => c.id !== req.params.id); save(); res.json({ ok: true }); });
 
 app.post('/api/run/:jobId', async (req, res) => { try { res.json(await runJob(req.params.jobId)); } catch (e) { res.status(400).json({ error: e.message }); } });
+// Per-candidate outreach
+app.post('/api/run-one/:candId', async (req, res) => { try { res.json(await runJobOne(req.params.candId)); } catch (e) { res.status(400).json({ error: e.message }); } });
+app.post('/api/run-email-one/:candId', async (req, res) => { try { res.json(await runEmailOne(req.params.candId)); } catch (e) { res.status(400).json({ error: e.message }); } });
 app.post('/api/flags/resolve', (req, res) => { const c = db.candidates.find(x => x.id === req.body.candId); const ch = c ? c[req.body.channel === 'em' ? 'em' : 'wa'] : null; if (ch && ch.flags[req.body.idx]) ch.flags[req.body.idx].resolved = true; save(); res.json({ ok: true }); });
 // Manual recruiter reply into a conversation
 app.post('/api/send', async (req, res) => {
