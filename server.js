@@ -443,7 +443,43 @@ function buildICS(c, ch, start, end, opts) {
   lines.push('BEGIN:VALARM', 'TRIGGER:-PT30M', 'ACTION:DISPLAY', 'DESCRIPTION:Reminder', 'END:VALARM', 'END:VEVENT', 'END:VCALENDAR');
   return lines.join('\r\n');
 }
-// On scheduling: build add-to-calendar links for BOTH parties and email proper invites (.ics) to each.
+// Insert the call DIRECTLY into the recruiter's Google Calendar via the API (needs OAuth connected).
+// With sendUpdates:'all' + the candidate as an attendee, Google emails the candidate a real invite too.
+async function insertGoogleEvent(c, ch, start, end) {
+  const o = oauthClient(); if (!o || !db.settings.googleToken) throw new Error('Google Calendar not connected');
+  const j = jobOf(c);
+  const calendar = google.calendar({ version: 'v3', auth: o });
+  const event = {
+    summary: `Recruiter call: ${c.name} — ${j ? j.title : ''}`,
+    description: eventDetails(c, ch, false),
+    location: (j && j.location) || '',
+    start: { dateTime: start.toISOString() },
+    end: { dateTime: end.toISOString() },
+    attendees: [{ email: db.settings.email }, c.email ? { email: c.email } : null].filter(Boolean),
+    reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: 30 }, { method: 'email', minutes: 60 }] },
+  };
+  const r = await calendar.events.insert({ calendarId: 'primary', requestBody: event, sendUpdates: 'all' });
+  return (r.data && r.data.htmlLink) || true;
+}
+// Fallback when Google Calendar isn't connected: email proper .ics invites to both parties.
+function emailCalendarInvites(c, ch, start, end, uncertain) {
+  if (!mailerReady()) return;
+  const j = jobOf(c), loc = (j && j.location) || '', org = db.settings.email;
+  const recTitle = `Recruiter call: ${c.name} — ${j ? j.title : ''}`;
+  const candTitle = `Call with ${db.company} — ${j ? j.title : ''} role`;
+  const recDetails = eventDetails(c, ch, uncertain), candDetails = eventDetailsCandidate(c, ch);
+  const recIcs = buildICS(c, ch, start, end, { summary: recTitle, description: recDetails, location: loc, organizerEmail: org, attendees: [org, c.email].filter(Boolean) });
+  const recBody = `${c.name} has scheduled a recruiter call.\n\nWhen: ${ch.answers.availability}\nRole: ${j ? j.title : ''}\nPhone: ${c.phone || '-'}\nEmail: ${c.email || '-'}\n\nAdd to your calendar: ${ch.answers.calendarLink}\n\n(A calendar invite is attached — open it to add to any calendar app.)`;
+  sendEmail(org, `📅 Recruiter call scheduled — ${c.name}`, recBody, [{ filename: 'invite.ics', content: recIcs, contentType: 'text/calendar; method=REQUEST' }])
+    .then(() => log(`📧 Calendar invite emailed to recruiter (${org})`)).catch(e => log('Recruiter invite email failed: ' + e.message));
+  if (c.email) {
+    const candIcs = buildICS(c, ch, start, end, { summary: candTitle, description: candDetails, location: loc, organizerEmail: org, attendees: [c.email] });
+    const candBody = `Hi ${c.name},\n\nYour call with the ${db.company} recruiter is confirmed for ${ch.answers.availability}.\n\nAdd it to your calendar: ${ch.answers.candidateCalendarLink}\n\n(A calendar invite is attached too — open it to add the call to any calendar app.)\n\nLooking forward to speaking with you!\n\n${db.company} Talent Team`;
+    sendEmail(c.email, `📅 Your call with ${db.company} — ${ch.answers.availability}`, candBody, [{ filename: 'invite.ics', content: candIcs, contentType: 'text/calendar; method=REQUEST' }])
+      .then(() => log(`📧 Calendar invite emailed to candidate (${c.email})`)).catch(e => log('Candidate invite email failed: ' + e.message));
+  }
+}
+// On scheduling: add the call to Google Calendar directly if connected; otherwise email .ics invites.
 function onScheduled(c, ch) {
   if (ch.calendarDone) return;
   ch.calendarDone = true;
@@ -452,27 +488,18 @@ function onScheduled(c, ch) {
     const loc = (j && j.location) || '';
     const recTitle = `Recruiter call: ${c.name} — ${j ? j.title : ''}`;
     const candTitle = `Call with ${db.company} — ${j ? j.title : ''} role`;
-    const recDetails = eventDetails(c, ch, uncertain);
-    const candDetails = eventDetailsCandidate(c, ch);
-    // Add-to-calendar links (one-tap, works with no setup)
-    ch.answers.calendarLink = gcalLink(recTitle, recDetails, loc, start, end);              // recruiter view
-    ch.answers.candidateCalendarLink = gcalLink(candTitle, candDetails, loc, start, end);    // candidate view
+    // One-tap add-to-calendar links (always available, shown in dashboard + candidate message)
+    ch.answers.calendarLink = gcalLink(recTitle, eventDetails(c, ch, uncertain), loc, start, end);
+    ch.answers.candidateCalendarLink = gcalLink(candTitle, eventDetailsCandidate(c, ch), loc, start, end);
     save();
     log(`📅 Calendar links ready for ${c.name} (${ch.answers.availability})${uncertain ? ' [time estimated]' : ''}`);
-    if (mailerReady()) {
-      const org = db.settings.email;
-      // → Recruiter invite (full internal details, candidate listed as attendee)
-      const recIcs = buildICS(c, ch, start, end, { summary: recTitle, description: recDetails, location: loc, organizerEmail: org, attendees: [org, c.email].filter(Boolean) });
-      const recBody = `${c.name} has scheduled a recruiter call.\n\nWhen: ${ch.answers.availability}\nRole: ${j ? j.title : ''}\nPhone: ${c.phone || '-'}\nEmail: ${c.email || '-'}\n\nAdd to your calendar: ${ch.answers.calendarLink}\n\n(A calendar invite is attached — open it to add to any calendar app.)`;
-      sendEmail(org, `📅 Recruiter call scheduled — ${c.name}`, recBody, [{ filename: 'invite.ics', content: recIcs, contentType: 'text/calendar; method=REQUEST' }])
-        .then(() => log(`📧 Calendar invite emailed to recruiter (${org})`)).catch(e => log('Recruiter invite email failed: ' + e.message));
-      // → Candidate invite (clean details), only if they have an email
-      if (c.email) {
-        const candIcs = buildICS(c, ch, start, end, { summary: candTitle, description: candDetails, location: loc, organizerEmail: org, attendees: [c.email] });
-        const candBody = `Hi ${c.name},\n\nYour call with the ${db.company} recruiter is confirmed for ${ch.answers.availability}.\n\nAdd it to your calendar: ${ch.answers.candidateCalendarLink}\n\n(A calendar invite is attached too — open it to add the call to any calendar app.)\n\nLooking forward to speaking with you!\n\n${db.company} Talent Team`;
-        sendEmail(c.email, `📅 Your call with ${db.company} — ${ch.answers.availability}`, candBody, [{ filename: 'invite.ics', content: candIcs, contentType: 'text/calendar; method=REQUEST' }])
-          .then(() => log(`📧 Calendar invite emailed to candidate (${c.email})`)).catch(e => log('Candidate invite email failed: ' + e.message));
-      }
+    if (calendarConnected()) {
+      // Preferred: insert straight into the recruiter's Google Calendar (also invites the candidate via Google).
+      insertGoogleEvent(c, ch, start, end)
+        .then(link => { if (typeof link === 'string') { ch.answers.googleEventLink = link; save(); } log(`📅 Added directly to your Google Calendar${c.email ? ' and invited ' + c.email : ''}.`); })
+        .catch(e => { log('Google Calendar insert failed (' + e.message + ') — falling back to email invites.'); emailCalendarInvites(c, ch, start, end, uncertain); });
+    } else {
+      emailCalendarInvites(c, ch, start, end, uncertain);
     }
   } catch (e) { ch.calendarDone = false; log('Calendar error for ' + c.name + ': ' + e.message); }
 }
@@ -884,7 +911,7 @@ const app = express();
 app.use(express.json({ limit: '25mb' }));
 app.use(express.static(__dirname));
 
-app.get('/api/status', (req, res) => res.json({ waStatus, qr: qrDataUrl, connectedAs: waInfo, logs: logs.slice(-40), emailStatus, emailReady: mailerReady(), emailUser: db.settings.email || null, calendarMode: 'invite', calendarConnected: true }));
+app.get('/api/status', (req, res) => res.json({ waStatus, qr: qrDataUrl, connectedAs: waInfo, logs: logs.slice(-40), emailStatus, emailReady: mailerReady(), emailUser: db.settings.email || null, calendarMode: calendarConnected() ? 'google' : 'invite', calendarConnected: calendarConnected() }));
 app.get('/api/state', (req, res) => res.json(db));
 
 // ----- Settings (email + Google credentials). Secrets are write-only; never returned. -----
@@ -896,6 +923,7 @@ app.post('/api/settings', (req, res) => {
   if (b.googleClientId !== undefined) db.settings.googleClientId = (b.googleClientId || '').trim();
   if (b.googleClientSecret) db.settings.googleClientSecret = b.googleClientSecret.trim();
   if (b.clearGoogleToken) db.settings.googleToken = null;
+  if (b.clearGoogleCreds) { db.settings.googleClientId = ''; db.settings.googleClientSecret = ''; db.settings.googleToken = null; }
   save(); res.json({ ok: true });
 });
 app.post('/api/email/test', async (req, res) => { try { if (!mailerReady()) throw new Error('Add email + app password first.'); await sendEmail(db.settings.email, 'RecruitFlow test ✅', 'Your RecruitFlow email is configured correctly.'); emailStatus = 'ok'; res.json({ ok: true }); } catch (e) { emailStatus = 'error'; res.status(400).json({ error: e.message }); } });
@@ -936,6 +964,17 @@ app.delete('/api/jobs/:id', (req, res) => { db.jobs = db.jobs.filter(j => j.id !
 function newChannel() { return { stage: 'new', transcript: [], answers: {}, flags: [], pending: null, chatId: null, skillIdx: 0 }; }
 function mkCand(jobId, b) { return { id: uid(), jobId, name: b.name, email: b.email, phone: b.phone, targetLocation: b.targetLocation, createdAt: now(), wa: newChannel(), em: newChannel() }; }
 app.post('/api/candidates', (req, res) => { if (!req.body.name) return res.status(400).json({ error: 'name required' }); const c = mkCand(req.body.jobId, req.body); db.candidates.push(c); save(); res.json(c); });
+// Edit a candidate's details at any stage (name / email / phone / target location).
+app.patch('/api/candidates/:id', (req, res) => {
+  const c = db.candidates.find(x => x.id === req.params.id);
+  if (!c) return res.status(404).json({ error: 'Candidate not found.' });
+  const b = req.body;
+  if (b.name !== undefined) { if (!b.name.trim()) return res.status(400).json({ error: 'Name cannot be empty.' }); c.name = b.name.trim(); }
+  if (b.email !== undefined) c.email = (b.email || '').trim();
+  if (b.phone !== undefined) c.phone = (b.phone || '').trim();
+  if (b.targetLocation !== undefined) c.targetLocation = (b.targetLocation || '').trim();
+  save(); res.json(c);
+});
 app.post('/api/candidates/bulk', (req, res) => { const { jobId, rows } = req.body; let added = 0; (rows || []).forEach(r => { if (r.name) { db.candidates.push(mkCand(jobId, r)); added++; } }); save(); res.json({ added }); });
 app.delete('/api/candidates/:id', (req, res) => { db.candidates = db.candidates.filter(c => c.id !== req.params.id); save(); res.json({ ok: true }); });
 
