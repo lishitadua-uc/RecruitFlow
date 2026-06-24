@@ -57,7 +57,8 @@
   .empty{text-align:center;color:var(--muted);padding:50px 20px} .empty .big{font-size:34px;margin-bottom:8px}
   .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:13px} .kv .k{color:var(--muted)}
   .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-  .stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 15px;min-width:120px} .stat .n{font-size:24px;font-weight:700} .stat .l{color:var(--muted);font-size:12px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 15px;min-width:120px;transition:.12s} .stat .n{font-size:24px;font-weight:700} .stat .l{color:var(--muted);font-size:12px}
+  .stat:hover{border-color:var(--brand2)} .stat-active{border-color:var(--brand);background:var(--panel2);box-shadow:0 0 0 1px var(--brand)} .stat-active .l{color:var(--brand2)}
   .banner{background:#2a2010;border:1px solid #5b4a1a;color:#fcd34d;border-radius:12px;padding:11px 14px;font-size:12.5px;display:flex;gap:9px;align-items:flex-start;margin-bottom:16px}
   .crumb{color:var(--muted);font-size:13px;margin:14px 0 0} .crumb a{cursor:pointer;color:var(--brand2)}
   .chatbody{background:#0b141a;border:1px solid var(--line);border-radius:12px;padding:13px;display:flex;flex-direction:column;gap:9px;max-height:440px;overflow-y:auto}
@@ -86,9 +87,9 @@ const api=(m,u,b)=>fetch(u,{method:m,headers:{'Content-Type':'application/json'}
 const esc=s=>(s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let DB={jobs:[],candidates:[],company:''};
 let STATUS={waStatus:'starting',qr:null,connectedAs:null,logs:[]};
-let UI={tab:'jobs',jobId:null,channel:'wa'};
+let UI={tab:'jobs',jobId:null,channel:'wa',respFilter:'all',respSort:'name',respDir:'asc',respJob:''};
 
-const STAGE_META={new:['Not started','b-grey'],outreach:['Outreach sent','b-blue'],location:['Asked location','b-blue'],preflocation:['Preferred location','b-blue'],workpref:['Work preference','b-blue'],experience:['Experience','b-blue'],role:['Current role','b-blue'],currentctc:['Current CTC','b-blue'],expectedctc:['Expected CTC','b-blue'],notice:['Notice period','b-blue'],skills:['Skill questions','b-blue'],avail:['Scheduling','b-amber'],avail_time:['Scheduling','b-amber'],avail_day:['Scheduling','b-amber'],scheduled:['Call scheduled ✓','b-green'],declined:['Not interested','b-red'],location_dropout:['Location mismatch','b-red'],notice_dropout:['Notice too long','b-red']};
+const STAGE_META={new:['Not started','b-grey'],outreach:['Outreach sent','b-blue'],location:['Asked location','b-blue'],preflocation:['Preferred location','b-blue'],workpref:['Work preference','b-blue'],experience:['Experience','b-blue'],role:['Current role','b-blue'],currentctc:['Current CTC','b-blue'],expectedctc:['Expected CTC','b-blue'],notice:['Notice period','b-blue'],skills:['Skill questions','b-blue'],resume:['Resume request','b-blue'],details_form:['Details form sent','b-blue'],avail:['Scheduling','b-amber'],availdate:['Scheduling','b-amber'],availtime:['Scheduling','b-amber'],avail_time:['Scheduling','b-amber'],avail_day:['Scheduling','b-amber'],scheduled:['Call scheduled ✓','b-green'],declined:['Not interested','b-red'],location_dropout:['Location mismatch','b-red'],notice_dropout:['Notice too long','b-red']};
 const badge=s=>{const m=STAGE_META[s]||STAGE_META.new;return `<span class="badge ${m[1]}">${esc(m[0])}</span>`;};
 const candsOf=jid=>DB.candidates.filter(c=>c.jobId===jid);
 const job=id=>DB.jobs.find(j=>j.id===id);
@@ -235,13 +236,39 @@ function renderPipeline(v){
 
 /* ---- responses ---- */
 function renderResponses(v){
-  const pool=DB.candidates;
-  const stat=(n,l)=>`<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`;
-  const sched=pool.filter(c=>CH(c).stage==='scheduled').length, interested=pool.filter(c=>CH(c).answers.interested==='Yes').length, dropped=pool.filter(c=>pipeCol(c)==='dropped').length, rejected=pool.filter(c=>pipeCol(c)==='reject').length;
-  v.innerHTML=`<div class="between"><div><h1>Responses</h1><p class="sub">Every answer captured — switch between channels.</p></div>${chanToggle()}</div>
-  <div class="row" style="margin-bottom:18px">${stat(pool.length,'Candidates')}${stat(interested,'Interested')}${stat(sched,'Calls scheduled')}${stat(dropped,'Dropped off')}${stat(rejected,'Reject')}</div>
-  <div class="tablewrap"><table><thead><tr><th>Candidate</th><th>Job</th><th>Type</th><th>Interested</th><th>Current loc</th><th>Preferred loc</th><th>OK office</th><th>Experience</th><th>Current CTC</th><th>Expected CTC</th><th>Notice</th><th>Skill answers</th><th>Availability</th><th>📅 Calendar</th></tr></thead>
-  <tbody>${pool.filter(c=>CH(c).stage!=='new').map(c=>{const a=CH(c).answers;const j=job(c.jobId)||{};const avail=a.availability||[a.timeSlot,a.day].filter(Boolean).join(', ');const sk=(a.skills||[]).map(s=>s.a).filter(Boolean);const skCell=sk.length?`<span title="${esc((a.skills||[]).map(s=>s.q+': '+s.a).join(' | '))}">${sk.length} answer(s)</span>`:'—';return `<tr><td><b>${esc(c.name)}</b></td><td>${esc(j.title||'')}</td><td>${esc(j.roleType||'—')}</td><td>${esc(a.interested||'—')}</td><td>${esc(a.currentLocation||'—')}</td><td>${esc(a.preferredLocation||'—')}</td><td>${esc(a.workComfortable||'—')}</td><td>${esc(a.experience||'—')}</td><td>${esc(a.currentCTC||'—')}</td><td>${esc(a.expectedCTC||'—')}</td><td>${esc(a.noticePeriod||'—')}</td><td>${skCell}</td><td>${esc(avail||'—')}</td><td>${a.calendarLink?`<a href="${esc(a.calendarLink)}" target="_blank" title="Add to recruiter calendar">📅 Recruiter ↗</a>${a.candidateCalendarLink?`<br><a href="${esc(a.candidateCalendarLink)}" target="_blank" title="Candidate's calendar link">👤 Candidate ↗</a>`:''}`:'—'}</td></tr>`;}).join('')||`<tr><td colspan="14" style="text-align:center;color:var(--muted);padding:30px">No responses yet on this channel.</td></tr>`}</tbody></table></div>
+  let pool=DB.candidates.filter(c=>CH(c).stage!=='new');
+  if(UI.respJob) pool=pool.filter(c=>c.jobId===UI.respJob);
+  // category counts (over the job-filtered pool)
+  const counts={
+    all:pool.length,
+    interested:pool.filter(c=>CH(c).answers.interested==='Yes').length,
+    scheduled:pool.filter(c=>CH(c).stage==='scheduled').length,
+    dropped:pool.filter(c=>pipeCol(c)==='dropped').length,
+    reject:pool.filter(c=>pipeCol(c)==='reject').length,
+  };
+  const catMatch=(c,f)=>f==='all'?true:f==='interested'?CH(c).answers.interested==='Yes':f==='scheduled'?CH(c).stage==='scheduled':pipeCol(c)===f;
+  const card=(key,n,l)=>`<div class="stat${UI.respFilter===key?' stat-active':''}" style="cursor:pointer" onclick="UI.respFilter='${key}';render()"><div class="n">${n}</div><div class="l">${l}</div></div>`;
+  // apply filter + sort
+  let rows=pool.filter(c=>catMatch(c,UI.respFilter));
+  const expNum=a=>{const m=(a.experience||'').match(/\d+/);return m?+m[0]:-1;};
+  const ctcNum=a=>{const m=(a.currentCTC||'').match(/\d+(\.\d+)?/);return m?parseFloat(m[0]):-1;};
+  const stageLbl=s=>(STAGE_META[s]||['?'])[0];
+  rows.sort((x,y)=>{const ax=CH(x).answers,ay=CH(y).answers;let r=0;
+    if(UI.respSort==='name') r=(x.name||'').localeCompare(y.name||'');
+    else if(UI.respSort==='stage') r=stageLbl(CH(x).stage).localeCompare(stageLbl(CH(y).stage));
+    else if(UI.respSort==='experience') r=expNum(ax)-expNum(ay);
+    else if(UI.respSort==='ctc') r=ctcNum(ax)-ctcNum(ay);
+    else if(UI.respSort==='job') r=((job(x.jobId)||{}).title||'').localeCompare((job(y.jobId)||{}).title||'');
+    return UI.respDir==='desc'?-r:r;});
+  const jobOpts=`<option value="">All jobs</option>${DB.jobs.map(j=>`<option value="${j.id}" ${UI.respJob===j.id?'selected':''}>${esc(j.title)}</option>`).join('')}`;
+  const sortSel=`<select onchange="UI.respSort=this.value;render()" style="background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:8px 10px">
+    ${[['name','Name'],['job','Job'],['stage','Stage'],['experience','Experience'],['ctc','Current CTC']].map(([k,l])=>`<option value="${k}" ${UI.respSort===k?'selected':''}>Sort: ${l}</option>`).join('')}</select>
+    <button class="btn sec sm" onclick="UI.respDir=UI.respDir==='asc'?'desc':'asc';render()" title="Toggle sort direction">${UI.respDir==='asc'?'↑ Asc':'↓ Desc'}</button>`;
+  v.innerHTML=`<div class="between"><div><h1>Responses</h1><p class="sub">Every answer captured — click a card to filter, use Sort to reorder.</p></div>${chanToggle()}</div>
+  <div class="row" style="margin-bottom:14px">${card('all',counts.all,'Candidates')}${card('interested',counts.interested,'Interested')}${card('scheduled',counts.scheduled,'Calls scheduled')}${card('dropped',counts.dropped,'Dropped off')}${card('reject',counts.reject,'Reject')}</div>
+  <div class="toolbar" style="margin-bottom:12px"><select onchange="UI.respJob=this.value||'';render()" style="background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:8px 10px">${jobOpts}</select>${sortSel}<span class="hint" style="align-self:center">Showing ${rows.length}${UI.respFilter!=='all'?' · '+UI.respFilter:''}</span></div>
+  <div class="tablewrap"><table><thead><tr><th>Candidate</th><th>Job</th><th>Type</th><th>Stage</th><th>Interested</th><th>Current loc</th><th>Preferred loc</th><th>OK office</th><th>Experience</th><th>Current CTC</th><th>Expected CTC</th><th>Notice</th><th>Skill answers</th><th>Availability</th><th>📅 Calendar</th></tr></thead>
+  <tbody>${rows.map(c=>{const a=CH(c).answers;const j=job(c.jobId)||{};const avail=a.availability||[a.timeSlot,a.day].filter(Boolean).join(', ');const sk=(a.skills||[]).map(s=>s.a).filter(Boolean);const skCell=sk.length?`<span title="${esc((a.skills||[]).map(s=>s.q+': '+s.a).join(' | '))}">${sk.length} answer(s)</span>`:'—';return `<tr><td><b>${esc(c.name)}</b></td><td>${esc(j.title||'')}</td><td>${esc(j.roleType||'—')}</td><td>${badge(CH(c).stage)}</td><td>${esc(a.interested||'—')}</td><td>${esc(a.currentLocation||'—')}</td><td>${esc(a.preferredLocation||'—')}</td><td>${esc(a.workComfortable||'—')}</td><td>${esc(a.experience||'—')}</td><td>${esc(a.currentCTC||'—')}</td><td>${esc(a.expectedCTC||'—')}</td><td>${esc(a.noticePeriod||'—')}</td><td>${skCell}</td><td>${esc(avail||'—')}</td><td>${a.calendarLink?`<a href="${esc(a.calendarLink)}" target="_blank" title="Add to recruiter calendar">📅 Recruiter ↗</a>${a.candidateCalendarLink?`<br><a href="${esc(a.candidateCalendarLink)}" target="_blank" title="Candidate's calendar link">👤 Candidate ↗</a>`:''}`:'—'}</td></tr>`;}).join('')||`<tr><td colspan="15" style="text-align:center;color:var(--muted);padding:30px">No candidates in this view.</td></tr>`}</tbody></table></div>
   <div style="margin-top:14px"><button class="btn ghost sm" onclick="exportCSV()">⬇ Export all to Excel/CSV</button></div>`;
 }
 
