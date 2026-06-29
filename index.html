@@ -168,7 +168,7 @@ function renderJobDetail(v){
 }
 function candTable(list){return `<div class="tablewrap" style="margin-top:10px"><table>
   <thead><tr><th>Name</th><th>Phone</th><th>Target city</th><th>WhatsApp</th><th>Email</th><th>Flags</th><th></th></tr></thead>
-  <tbody>${list.map(c=>{const f=c.wa.flags.filter(x=>!x.resolved).length+((c.em&&c.em.flags)?c.em.flags.filter(x=>!x.resolved).length:0);return `<tr><td><b>${esc(c.name)}</b><br><span style="color:var(--muted)">${esc(c.email||'')}</span></td>
+  <tbody>${list.map(c=>{const f=c.wa.flags.filter(x=>!x.resolved).length+((c.em&&c.em.flags)?c.em.flags.filter(x=>!x.resolved).length:0);return `<tr><td><b>${esc(c.name)}</b>${c.dnc?` <span class="badge b-red" title="Opted out — won't be contacted" onclick="if(confirm('Re-enable contact for ${esc(c.name)}?'))unDnc('${c.id}')" style="cursor:pointer">🚫 opted out</span>`:''}<br><span style="color:var(--muted)">${esc(c.email||'')}</span></td>
     <td>${esc(c.phone)}</td><td>${esc(c.targetLocation||'—')}</td><td>${badge(c.wa.stage)}</td><td>${badge((c.em||{}).stage||'new')}</td><td>${f?`<span style="color:var(--amber)">⚑ ${f}</span>`:'—'}</td>
     <td><div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">
       ${c.wa.stage==='new'?`<button class="btn sm" style="background:#25D366;color:#053321" onclick="runOne('${c.id}')" title="Send WhatsApp outreach to ${esc(c.name)}">▶ WhatsApp</button>`:`<span class="hint" title="WhatsApp already sent">✓ WA sent</span>`}
@@ -344,9 +344,29 @@ async function renderSettings(v){
     ${field('s_gsecret','Google Client Secret',''  ,{type:'password',ph:SET.googleClientSecretSet?'•••••••• (saved — leave blank to keep)':'GOCSPX-…'})}
     <div class="toolbar"><button class="btn sec" onclick="saveGoogle()">Save credentials</button><button class="btn" onclick="connectGoogle()">🔗 Connect Google Calendar</button></div>
     <p class="hint" style="margin-top:10px">Until connected, RecruitFlow still emails a calendar invite (.ics) + an "Add to Calendar" link to you and the candidate — so nothing is lost.</p>`}
+  </div>
+
+  <div class="card"><h2 style="margin-bottom:4px">🤖 AI understanding ${SET.aiEnabled&&SET.anthropicKeySet?'<span class="badge b-green" style="margin-left:6px">On</span>':'<span class="badge b-grey" style="margin-left:6px">Off</span>'}</h2>
+    <p class="hint" style="margin-bottom:10px">Connect Claude so the bot truly understands replies — other languages (Hindi/Hinglish), "actually my CTC is 15", "who is this?", "stop messaging me", "call me later", negotiation, and more. Without it, the bot uses fast keyword rules. Polls, CTC checks, and calendar all keep working either way.</p>
+    <details style="margin-bottom:10px"><summary style="cursor:pointer;color:var(--brand2);font-size:13px">▸ How to get an Anthropic API key</summary>
+      <ol class="hint" style="line-height:1.7;padding-left:18px;margin:8px 0">
+        <li>Go to <a href="https://console.anthropic.com/settings/keys" target="_blank" style="color:var(--brand2)">console.anthropic.com</a> → sign in → <b>API Keys</b> → <b>Create Key</b>.</li>
+        <li>Add a little billing credit (Settings → Billing). Each candidate conversation costs roughly a few cents.</li>
+        <li>Copy the key (starts with <code>sk-ant-</code>) and paste it below.</li>
+      </ol></details>
+    ${field('s_aikey','Anthropic API key',''  ,{type:'password',ph:SET.anthropicKeySet?'•••••••• (saved — leave blank to keep)':'sk-ant-…'})}
+    <div class="field"><label>Model</label><select id="s_aimodel" style="background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:10px 11px;width:100%">
+      ${[['claude-opus-4-8','Claude Opus 4.8 — most capable (recommended)'],['claude-sonnet-4-6','Claude Sonnet 4.6 — balanced, cheaper'],['claude-haiku-4-5','Claude Haiku 4.5 — fastest, cheapest']].map(([v,l])=>`<option value="${v}" ${(SET.aiModel||'claude-opus-4-8')===v?'selected':''}>${l}</option>`).join('')}
+    </select></div>
+    <label style="display:flex;align-items:center;gap:8px;margin:6px 0;cursor:pointer"><input type="checkbox" id="s_aienabled" ${SET.aiEnabled?'checked':''}> <span>Use AI to read & reply to candidate messages</span></label>
+    <div class="toolbar"><button class="btn sec" onclick="saveAI()">Save</button><button class="btn" onclick="testAI()">Test AI</button>${SET.anthropicKeySet?`<button class="btn ghost sm" onclick="clearAI()">Remove key</button>`:''}</div>
+    <p class="hint" style="margin-top:10px">Your key is stored only on this computer (in your local settings) and used only to interpret candidate messages.</p>
   </div>`;
 }
 async function disconnectGoogle(){await api('POST','/api/settings',{clearGoogleToken:true});await refresh();toast('Google Calendar disconnected.');render();}
+async function saveAI(){const k=document.getElementById('s_aikey').value.trim();await api('POST','/api/settings',{anthropicKey:k||undefined,aiModel:document.getElementById('s_aimodel').value,aiEnabled:document.getElementById('s_aienabled').checked});await refresh();toast('AI settings saved.');render();}
+async function testAI(){await saveAI();const r=await api('POST','/api/ai/test');r.error?toast('⚠️ '+r.error):toast('✅ AI connected ('+r.model+'): '+r.reply);}
+async function clearAI(){if(!confirm('Remove the API key and turn AI off?'))return;await api('POST','/api/settings',{clearAnthropicKey:true});await refresh();toast('API key removed.');render();}
 async function saveEmail(){await api('POST','/api/settings',{email:document.getElementById('s_email').value.trim(),emailPass:document.getElementById('s_emailpass').value});await refresh();toast('Email settings saved.');render();}
 async function testEmail(){await saveEmailQuiet();const r=await api('POST','/api/email/test');await refresh();r.error?toast('⚠️ '+r.error):toast('✅ Test email sent — check your inbox.');render();}
 async function saveEmailQuiet(){await api('POST','/api/settings',{email:document.getElementById('s_email').value.trim(),emailPass:document.getElementById('s_emailpass').value});}
@@ -392,6 +412,7 @@ async function saveCand(jid,candId){const g=i=>document.getElementById(i).value.
   if(candId){const r=await api('PATCH','/api/candidates/'+candId,data);if(r.error)return toast('⚠️ '+r.error);closeOverlay();await reload();toast('Candidate updated.');}
   else{await api('POST','/api/candidates',Object.assign({jobId:jid},data));closeOverlay();await reload();toast('Candidate added.');}}
 async function delCand(id){if(!confirm('Remove this candidate?'))return;await api('DELETE','/api/candidates/'+id);await reload();}
+async function unDnc(id){await api('PATCH','/api/candidates/'+id,{dnc:false});await reload();toast('Contact re-enabled.');}
 function bulkForm(jid){document.getElementById('overlay').innerHTML=`<div class="overlay" onclick="if(event.target===this)closeOverlay()"><div class="modal"><div class="between"><h2>Bulk upload candidates</h2><button class="x" onclick="closeOverlay()">×</button></div>
   <p class="modalsub">Upload a CSV (export Excel as .csv). Header row required: <code>Full Name, Email, Phone, Target Location</code></p>
   <div class="field"><label>Choose CSV file</label><input type="file" id="bulkfile" accept=".csv,text/csv"></div>

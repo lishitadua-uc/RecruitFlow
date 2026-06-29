@@ -9,6 +9,7 @@
 ============================================================ */
 const express = require('express');
 const { Client, LocalAuth, MessageMedia, Poll } = require('whatsapp-web.js');
+const Anthropic = require('@anthropic-ai/sdk');
 const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
@@ -431,6 +432,155 @@ function handleIncoming(c, ch, text) {
 }
 function finish(ch, out) { out.forEach(t => ch.transcript.push({ from: 'system', text: t, ts: now() })); save(); return out; }
 
+/* ============================================================
+   AI interpreter (optional) — uses Claude to understand each
+   message in context: language, nuance, "change my answer",
+   negotiation, opt-out, reschedule, wrong number, etc.
+   Falls back to the rule engine when AI is off or errors.
+============================================================ */
+function aiClient() { return db.settings.anthropicKey ? new Anthropic({ apiKey: db.settings.anthropicKey }) : null; }
+function aiReady() { return !!(db.settings.aiEnabled && db.settings.anthropicKey); }
+const aiModel = () => db.settings.aiModel || 'claude-opus-4-8';
+
+// What the bot is currently trying to collect, in plain words (drives the AI's extraction).
+function expectationFor(stage, j) {
+  switch (stage) {
+    case 'outreach': return 'whether the candidate is interested in exploring the role (yes/no)';
+    case 'location': return 'their current city';
+    case 'preflocation': return 'their preferred work city';
+    case 'workpref': return `whether they're comfortable working ${j ? j.workingDays : ''} days/week from office in ${j ? j.location : ''} (yes/no)`;
+    case 'experience': return 'their total years of work experience';
+    case 'currentctc': return 'their current CTC (annual salary) as a number';
+    case 'expectedctc': return 'their expected CTC (annual salary) as a number';
+    case 'notice': return 'their notice period (immediate / a number of days / or that they are serving notice)';
+    case 'skills': return 'their answer to the recruiter\'s skill question';
+    case 'resume': return 'an updated resume link (or that they want to skip)';
+    case 'avail': case 'availdate': return 'the date they want the recruiter call';
+    case 'availtime': return 'the time slot they want for the call';
+    default: return 'nothing further — the conversation has reached an end state';
+  }
+}
+const AI_DECISION_TOOL = {
+  name: 'decide',
+  description: 'Decide how to handle the candidate\'s latest message and what to reply.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      intent: { type: 'string', enum: ['answer', 'question', 'not_interested', 'opt_out', 'reschedule', 'wrong_person', 'human_handoff', 'change_answer', 'busy', 'smalltalk', 'unclear'], description: 'The candidate\'s intent.' },
+      field: { type: 'string', enum: ['interest', 'currentLocation', 'preferredLocation', 'workpref', 'experience', 'currentctc', 'expectedctc', 'notice', 'skills', 'resume', 'availability', 'none'], description: 'For answer: the field this answers (usually the one being asked). For change_answer: which earlier field to update.' },
+      value: { type: 'string', description: 'For answer/change_answer, the canonical value to record. Formats: interest/workpref → "yes" or "no"; experience → "<n> years"; currentctc/expectedctc → a number like "12" or "12 LPA"; notice → "immediate" / "<n> days" / "serving notice"; location → the city; availability → "<day or date> <time>" e.g. "Friday 3 pm"; resume → the link or "skip". Empty for other intents.' },
+      reply: { type: 'string', description: 'The message to send the candidate, in THEIR language. For intent=answer leave EMPTY (the system sends the next question). Required for question/smalltalk/not_interested/opt_out/wrong_person/human_handoff/busy/reschedule/change_answer.' },
+      language: { type: 'string', description: 'Language the candidate is writing in, e.g. English, Hindi, Hinglish.' },
+      flagForRecruiter: { type: 'boolean', description: 'True if a human recruiter should review this (e.g. an unanswerable question, negotiation, complaint).' },
+    },
+    required: ['intent', 'value', 'reply', 'language', 'flagForRecruiter'],
+  },
+};
+function aiSystemPrompt(c, ch) {
+  const j = jobOf(c), a = ch.answers || {};
+  const known = Object.entries(a).filter(([k, v]) => v && typeof v !== 'object').map(([k, v]) => `  - ${k}: ${v}`).join('\n');
+  const skillQs = (j && j.skillQuestions || []).filter(Boolean).map((q, i) => `  ${i + 1}. ${q}`).join('\n');
+  return `You are a warm, professional recruitment assistant for ${db.company}, screening a candidate over ${ch === c.wa ? 'WhatsApp' : 'email'} for a real job. You are talking to a real human — handle the conversation naturally.
+
+THE ROLE
+  Title: ${j ? j.title : '-'}
+  Location: ${j ? j.location : '-'} (${j ? j.workingDays : '?'} days/week from office${j && j.remote === 'No' ? ', no remote' : ''})
+  Max notice period accepted: ${j && j.maxNoticeDays != null ? noticeLabel(j.maxNoticeDays) : 'no limit'}
+${skillQs ? '  Skill questions for this role:\n' + skillQs : ''}
+
+WHAT WE'VE COLLECTED SO FAR
+${known || '  (nothing yet)'}
+
+RIGHT NOW we are waiting for: ${expectationFor(ch.stage, j)}.
+
+YOUR JOB: read the candidate's latest message (it may be in any language, informal, or off-topic) and call the "decide" tool.
+GUIDELINES
+  - If they answered what we're waiting for → intent "answer", set field + value in the exact canonical format, leave reply empty.
+  - If they asked a question → intent "question"; answer briefly and helpfully in their language. For CTC/budget/salary negotiation say a recruiter will discuss specifics on the call, and set flagForRecruiter true. If you don't know, say a recruiter will help and set flagForRecruiter true.
+  - If they want to fix an earlier answer ("actually my CTC is 15") → intent "change_answer" with the field + new value, and a short confirming reply.
+  - "stop messaging me / not interested ever / remove me" → intent "opt_out", brief polite reply confirming we'll stop.
+  - "not interested right now" → intent "not_interested".
+  - Wrong person / "who is this" doubting it's real → intent "wrong_person" (reassure who you are) or handle as question if they just want to confirm legitimacy.
+  - "call me later / busy / text me tomorrow" → intent "busy", acknowledge warmly.
+  - Wants a human / "let me talk to someone" → intent "human_handoff", say you'll connect them, flagForRecruiter true.
+  - Already scheduled and they want a different time → intent "reschedule".
+  - Pure greeting/chit-chat with no content → intent "smalltalk".
+  - Can't tell → intent "unclear", ask them to clarify in their language.
+  - Always reply in the SAME language the candidate used. Keep replies short and friendly. Never invent role details not given above.`;
+}
+function aiCompactTranscript(ch) {
+  const t = (ch.transcript || []).slice(-12);
+  return t.map(m => `${m.from === 'candidate' ? 'Candidate' : 'You'}: ${m.text}`).join('\n');
+}
+// Returns a decision object or null on failure.
+async function aiDecide(c, ch, text) {
+  const client = aiClient(); if (!client) return null;
+  try {
+    const resp = await client.messages.create({
+      model: aiModel(),
+      max_tokens: 700,
+      system: [{ type: 'text', text: aiSystemPrompt(c, ch), cache_control: { type: 'ephemeral' } }],
+      tools: [AI_DECISION_TOOL],
+      tool_choice: { type: 'tool', name: 'decide' },
+      messages: [{ role: 'user', content: `Conversation so far:\n${aiCompactTranscript(ch)}\n\nCandidate's latest message:\n"""${text}"""\n\nCall decide.` }],
+    });
+    const blk = (resp.content || []).find(b => b.type === 'tool_use');
+    return blk ? blk.input : null;
+  } catch (e) { log('AI error: ' + e.message); return null; }
+}
+const FIELD_TO_STAGE = { interest: 'outreach', currentLocation: 'location', preferredLocation: 'preflocation', workpref: 'workpref', experience: 'experience', currentctc: 'currentctc', expectedctc: 'expectedctc', notice: 'notice', resume: 'resume', availability: 'avail' };
+// AI-driven processing. Returns reply strings (engine prompts + AI replies). Falls back to rule engine.
+async function aiProcess(c, ch, text) {
+  const d = await aiDecide(c, ch, text);
+  if (!d) return handleIncoming(c, ch, text);   // fall back to rules
+  ch.transcript.push({ from: 'candidate', text, ts: now() });
+  ch.nudgeCount = 0;
+  if (d.flagForRecruiter) ch.flags.push({ q: text, ts: now(), resolved: false, ai: true });
+  log(`🤖 ${c.name}: intent=${d.intent}${d.field && d.field !== 'none' ? ' field=' + d.field : ''} lang=${d.language || '?'}`);
+  const reply = (d.reply || '').trim();
+  switch (d.intent) {
+    case 'answer': {
+      // Hand the canonical value to the rule engine so polls / dropouts / CTC checks / calendar all still run.
+      return handleIncoming(c, ch, d.value || text);
+    }
+    case 'change_answer': {
+      if (d.field && d.field !== 'none' && d.value) { ch.answers[d.field === 'availability' ? 'availability' : d.field] = d.value; }
+      return finish(ch, [reply || 'Got it — I\'ve updated that. 👍']);
+    }
+    case 'opt_out': {
+      c.dnc = true; ch.stage = isTerminal(ch.stage) ? ch.stage : 'declined';
+      return finish(ch, [reply || "Understood — I won't message you again. Wishing you all the best! 🙏"]);
+    }
+    case 'wrong_person': {
+      c.dnc = true; ch.flags.push({ q: '[Wrong person] ' + text, ts: now(), resolved: false });
+      return finish(ch, [reply || `Apologies for the confusion! I'll remove this number. Have a great day.`]);
+    }
+    case 'not_interested': {
+      ch.stage = 'declined';
+      return finish(ch, [reply || "No worries! We'll keep your profile and reach out if a better fit comes up. Best of luck! 🙏"]);
+    }
+    case 'human_handoff': {
+      return finish(ch, [reply || "Absolutely — I'll have our recruiter reach out to you personally. 🙌"]);
+    }
+    case 'busy': {
+      return finish(ch, [reply || "No problem at all — take your time. I'll check back later. 😊"]);
+    }
+    case 'reschedule': {
+      ch.answers.scheduledStartISO = null; ch.answers.scheduledEndISO = null; ch.activePoll = null; ch.activePollMsgId = null; ch.calendarDone = false;
+      ch.stage = 'availdate';
+      return finish(ch, [reply || "Sure — let's find a new time. 🙂", stagePrompt('availdate', c, jobOf(c))]);
+    }
+    case 'question': case 'smalltalk': case 'unclear': default: {
+      const out = [reply || "Could you tell me a bit more?"];
+      // If we're mid-flow, gently re-show the current question so we don't stall.
+      if (!isTerminal(ch.stage) && ch.stage !== 'new' && d.intent !== 'smalltalk') {
+        const p = stagePrompt(ch.stage, c, jobOf(c)); if (p) out.push(p);
+      }
+      return finish(ch, out);
+    }
+  }
+}
+
 /* ---------------- Logger (shared) ---------------- */
 const logs = [];
 function log(m) { const line = `[${new Date().toLocaleTimeString()}] ${m}`; logs.push(line); if (logs.length > 200) logs.shift(); console.log(line); }
@@ -591,7 +741,7 @@ function topReply(text) {
 }
 async function sendEmailOutreachTo(c) {
   const j = jobOf(c);
-  if (!j || !c.email || c.em.stage !== 'new') return false;
+  if (c.dnc || !j || !c.email || c.em.stage !== 'new') return false;
   const subject = `Exploring a ${j.title} opportunity at ${db.company}`;
   c.em.subject = subject;
   const attach = j.jdFile ? [{ filename: j.jdFileName || 'Job-Description.pdf', path: path.join(UP_DIR, j.jdFile) }] : [];
@@ -741,6 +891,7 @@ const FOLLOWUP_MS = 24 * 60 * 60 * 1000;
 async function checkEmailFollowups() {
   if (!mailerReady()) return;
   for (const c of db.candidates) {
+    if (c.dnc) continue;
     if (c.wa.stage !== 'outreach' || c.em.stage !== 'new' || !c.email) continue;       // still at initial WA outreach, no email yet
     if (c.wa.transcript.some(m => m.from === 'candidate')) continue;                    // they DID reply on WhatsApp → leave it
     if (Date.now() - (c.wa.outreachSentAt || 0) < FOLLOWUP_MS) continue;                // not 24h yet
@@ -760,6 +911,7 @@ function nudgeText(c, n) {
 // Re-ping any candidate who hasn't replied to our last message for 1 day, on whichever channel that message went out.
 async function checkNudges() {
   for (const c of db.candidates) {
+    if (c.dnc) continue;
     for (const ch of [c.wa, c.em]) {
       if (!ch || ch.stage === 'new' || isTerminal(ch.stage)) continue;
       const t = ch.transcript || []; if (!t.length) continue;
@@ -809,11 +961,12 @@ async function pollEmail() {
         const body = topReply(parsed.text || '');
         if (!body) continue;
         log(`📧 ◀ ${c.name}: ${body.slice(0, 50)}`);
+        if (c.dnc) { continue; }
         let replies;
         if (c.em.stage === 'details_form') {
           replies = await handleEmailFormReply(c, parsed);   // batch-parse the form reply
         } else {
-          replies = handleIncoming(c, c.em, body);
+          replies = aiReady() ? await aiProcess(c, c.em, body) : handleIncoming(c, c.em, body);
         }
         for (const r of replies) await sendEmail(c.email, emailSubject(c), stripMd(r));
         if (replies && replies.length) log(`📧 ▶ Replied to ${c.name} → [${STAGE_LABEL[c.em.stage] || c.em.stage}]`);
@@ -934,7 +1087,8 @@ async function catchUpWhatsApp() {
       for (const m of pending) {
         if (!m.body) continue;
         log(`⏳ Catch-up — ${c.name}: ${m.body.slice(0, 40)}`);
-        const replies = handleIncoming(c, c.wa, m.body);
+        if (c.dnc) { c.wa.lastProcessedTs = m.timestamp * 1000; continue; }
+        const replies = aiReady() ? await aiProcess(c, c.wa, m.body) : handleIncoming(c, c.wa, m.body);
         await sendRepliesWA(c, replies);
         c.wa.lastProcessedTs = m.timestamp * 1000;
       }
@@ -959,12 +1113,13 @@ client.on('message', async msg => {
     let c = db.candidates.find(x => x.wa.stage !== 'new' && last10(x.phone) === num.slice(-10));
     if (!c) { c = db.candidates.find(x => x.wa.stage !== 'new' && x.wa.chatId === msg.from); how = 'pinned-chat'; }
     if (!c) { log(`◀ Incoming from +${num} — not a contacted candidate, ignored (no auto-reply).`); return; }
+    if (c.dnc) { log(`◀ ${c.name} opted out (do-not-contact) — ignored.`); return; }
     c.wa.chatId = msg.from;                        // pin this chat to the candidate for all future messages
     c.wa.lastProcessedTs = (msg.timestamp ? msg.timestamp * 1000 : Date.now());
     save();
     log(`◀ ${c.name} [match:${how}] +${num}: ${msg.body.slice(0, 60)}`);
     c.wa.activePoll = null;   // they replied with text; any open poll is superseded
-    const replies = handleIncoming(c, c.wa, msg.body);
+    const replies = aiReady() ? await aiProcess(c, c.wa, msg.body) : handleIncoming(c, c.wa, msg.body);
     await sendRepliesWA(c, replies);
     if (replies && replies.length) log(`▶ Replied to ${c.name} → now [${STAGE_LABEL[c.wa.stage] || c.wa.stage}]`);
     else log(`🤐 ${c.name}: message not relevant to recruitment — no reply sent.`);
@@ -1002,6 +1157,7 @@ module.exports = { detectInterest, detectComfort, detectExperience, detectRole, 
 /* ---------------- Send outreach (RUN) ---------------- */
 // Send WhatsApp outreach to ONE candidate. Throws on failure. media is optional (loaded once by the caller).
 async function sendWhatsAppOutreachTo(c, j, media) {
+  if (c.dnc) throw new Error('candidate opted out (do-not-contact)');
   if (c.wa.stage !== 'new') throw new Error('already contacted on WhatsApp');
   const text = outreachText(c, j), jid2 = normPhone(c.phone) + '@c.us';
   const ok = await client.isRegisteredUser(jid2);
@@ -1054,11 +1210,11 @@ const app = express();
 app.use(express.json({ limit: '25mb' }));
 app.use(express.static(__dirname));
 
-app.get('/api/status', (req, res) => res.json({ waStatus, qr: qrDataUrl, connectedAs: waInfo, logs: logs.slice(-40), emailStatus, emailReady: mailerReady(), emailUser: db.settings.email || null, calendarMode: calendarConnected() ? 'google' : 'invite', calendarConnected: calendarConnected() }));
+app.get('/api/status', (req, res) => res.json({ waStatus, qr: qrDataUrl, connectedAs: waInfo, logs: logs.slice(-40), emailStatus, emailReady: mailerReady(), emailUser: db.settings.email || null, calendarMode: calendarConnected() ? 'google' : 'invite', calendarConnected: calendarConnected(), aiOn: aiReady() }));
 app.get('/api/state', (req, res) => res.json(db));
 
 // ----- Settings (email + Google credentials). Secrets are write-only; never returned. -----
-app.get('/api/settings', (req, res) => res.json({ email: db.settings.email || '', emailPassSet: !!db.settings.emailPass, googleClientId: db.settings.googleClientId || '', googleClientSecretSet: !!db.settings.googleClientSecret, calendarConnected: calendarConnected(), redirectUri: OAUTH_REDIRECT }));
+app.get('/api/settings', (req, res) => res.json({ email: db.settings.email || '', emailPassSet: !!db.settings.emailPass, googleClientId: db.settings.googleClientId || '', googleClientSecretSet: !!db.settings.googleClientSecret, calendarConnected: calendarConnected(), redirectUri: OAUTH_REDIRECT, anthropicKeySet: !!db.settings.anthropicKey, aiEnabled: !!db.settings.aiEnabled, aiModel: aiModel() }));
 app.post('/api/settings', (req, res) => {
   const b = req.body;
   if (b.email !== undefined) db.settings.email = (b.email || '').trim();
@@ -1067,9 +1223,21 @@ app.post('/api/settings', (req, res) => {
   if (b.googleClientSecret) db.settings.googleClientSecret = b.googleClientSecret.trim();
   if (b.clearGoogleToken) db.settings.googleToken = null;
   if (b.clearGoogleCreds) { db.settings.googleClientId = ''; db.settings.googleClientSecret = ''; db.settings.googleToken = null; }
+  if (b.anthropicKey) db.settings.anthropicKey = b.anthropicKey.trim();
+  if (b.clearAnthropicKey) { db.settings.anthropicKey = ''; db.settings.aiEnabled = false; }
+  if (b.aiEnabled !== undefined) db.settings.aiEnabled = !!b.aiEnabled;
+  if (b.aiModel !== undefined) db.settings.aiModel = (b.aiModel || '').trim() || 'claude-opus-4-8';
   save(); res.json({ ok: true });
 });
 app.post('/api/email/test', async (req, res) => { try { if (!mailerReady()) throw new Error('Add email + app password first.'); await sendEmail(db.settings.email, 'RecruitFlow test ✅', 'Your RecruitFlow email is configured correctly.'); emailStatus = 'ok'; res.json({ ok: true }); } catch (e) { emailStatus = 'error'; res.status(400).json({ error: e.message }); } });
+app.post('/api/ai/test', async (req, res) => {
+  try {
+    const client = aiClient(); if (!client) throw new Error('Add your Anthropic API key first.');
+    const r = await client.messages.create({ model: aiModel(), max_tokens: 32, messages: [{ role: 'user', content: 'Reply with exactly: RecruitFlow AI ready' }] });
+    const txt = (r.content || []).filter(b => b.type === 'text').map(b => b.text).join(' ');
+    res.json({ ok: true, model: r.model, reply: txt.trim() });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
 
 // ----- Google Calendar OAuth -----
 app.get('/api/google/connect', (req, res) => { const url = googleAuthUrl(); if (!url) return res.status(400).json({ error: 'Add your Google Client ID & Secret in Settings first.' }); res.json({ url }); });
@@ -1116,6 +1284,7 @@ app.patch('/api/candidates/:id', (req, res) => {
   if (b.email !== undefined) c.email = (b.email || '').trim();
   if (b.phone !== undefined) c.phone = (b.phone || '').trim();
   if (b.targetLocation !== undefined) c.targetLocation = (b.targetLocation || '').trim();
+  if (b.dnc !== undefined) c.dnc = !!b.dnc;
   save(); res.json(c);
 });
 app.post('/api/candidates/bulk', (req, res) => { const { jobId, rows } = req.body; let added = 0; (rows || []).forEach(r => { if (r.name) { db.candidates.push(mkCand(jobId, r)); added++; } }); save(); res.json({ added }); });
