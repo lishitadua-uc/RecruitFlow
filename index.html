@@ -89,7 +89,7 @@ let DB={jobs:[],candidates:[],company:''};
 let STATUS={waStatus:'starting',qr:null,connectedAs:null,logs:[]};
 let UI={tab:'jobs',jobId:null,channel:'wa',respFilter:'all',respSort:'name',respDir:'asc',respJob:''};
 
-const STAGE_META={new:['Not started','b-grey'],outreach:['Outreach sent','b-blue'],location:['Asked location','b-blue'],preflocation:['Preferred location','b-blue'],workpref:['Work preference','b-blue'],experience:['Experience','b-blue'],role:['Current role','b-blue'],currentctc:['Current CTC','b-blue'],expectedctc:['Expected CTC','b-blue'],notice:['Notice period','b-blue'],skills:['Skill questions','b-blue'],resume:['Resume request','b-blue'],details_form:['Details form sent','b-blue'],avail:['Scheduling','b-amber'],availdate:['Scheduling','b-amber'],availtime:['Scheduling','b-amber'],avail_time:['Scheduling','b-amber'],avail_day:['Scheduling','b-amber'],scheduled:['Call scheduled ✓','b-green'],declined:['Not interested','b-red'],location_dropout:['Location mismatch','b-red'],notice_dropout:['Notice too long','b-red']};
+const STAGE_META={new:['Not started','b-grey'],outreach:['Outreach sent','b-blue'],location:['Asked location','b-blue'],preflocation:['Preferred location','b-blue'],workpref:['Work preference','b-blue'],experience:['Experience','b-blue'],role:['Current role','b-blue'],currentctc:['Current CTC','b-blue'],expectedctc:['Expected CTC','b-blue'],notice:['Notice period','b-blue'],skills:['Skill questions','b-blue'],resume:['Resume request','b-blue'],reason:['Asked why','b-amber'],resurface:['Resurface timing','b-amber'],details_form:['Details form sent','b-blue'],avail:['Scheduling','b-amber'],availdate:['Scheduling','b-amber'],availtime:['Scheduling','b-amber'],avail_time:['Scheduling','b-amber'],avail_day:['Scheduling','b-amber'],scheduled:['Call scheduled ✓','b-green'],declined:['Not interested','b-red'],location_dropout:['Location mismatch','b-red'],notice_dropout:['Notice too long','b-red']};
 const badge=s=>{const m=STAGE_META[s]||STAGE_META.new;return `<span class="badge ${m[1]}">${esc(m[0])}</span>`;};
 const candsOf=jid=>DB.candidates.filter(c=>c.jobId===jid);
 const job=id=>DB.jobs.find(j=>j.id===id);
@@ -204,7 +204,7 @@ async function runJob(jid){
 }
 
 /* ---- pipeline ---- */
-const PCOLS=[['new','Not started'],['outreach','Outreach'],['discussion','In discussion'],['scheduling','Scheduling'],['scheduled','Scheduled ✓'],['dropped','Dropped off'],['reject','Reject']];
+const PCOLS=[['new','Not started'],['outreach','Outreach'],['discussion','In discussion'],['scheduling','Scheduling'],['scheduled','Scheduled ✓'],['revisit','Revisit later'],['dropped','Dropped off'],['reject','Reject']];
 const STALL_DAYS=3;
 // A candidate has "stopped responding" if they're mid-conversation, the last message was ours, and 3+ days have passed.
 function isStalled(ch){
@@ -219,7 +219,8 @@ function pipeCol(c){
   if(s==='new') return 'new';
   if(s==='scheduled') return 'scheduled';
   if(s==='location_dropout'||s==='notice_dropout') return 'reject';   // criteria didn't fit
-  if(s==='declined') return 'dropped';                                // said not interested
+  if(s==='declined') return CH(c).answers.resurfaceDate ? 'revisit' : 'dropped';   // resurface-later vs plain dropped
+  if(s==='reason'||s==='resurface') return 'dropped';                 // mid not-interested probe
   if(isStalled(ch)) return 'dropped';                                 // stopped responding
   if(s==='outreach') return 'outreach';                               // outreach sent, awaiting first reply
   if(['avail','availdate','availtime','avail_time','avail_day'].includes(s)) return 'scheduling';
@@ -244,6 +245,7 @@ function renderResponses(v){
     interested:pool.filter(c=>CH(c).answers.interested==='Yes').length,
     scheduled:pool.filter(c=>CH(c).stage==='scheduled').length,
     dropped:pool.filter(c=>pipeCol(c)==='dropped').length,
+    revisit:pool.filter(c=>pipeCol(c)==='revisit').length,
     reject:pool.filter(c=>pipeCol(c)==='reject').length,
   };
   const catMatch=(c,f)=>f==='all'?true:f==='interested'?CH(c).answers.interested==='Yes':f==='scheduled'?CH(c).stage==='scheduled':pipeCol(c)===f;
@@ -265,10 +267,10 @@ function renderResponses(v){
     ${[['name','Name'],['job','Job'],['stage','Stage'],['experience','Experience'],['ctc','Current CTC']].map(([k,l])=>`<option value="${k}" ${UI.respSort===k?'selected':''}>Sort: ${l}</option>`).join('')}</select>
     <button class="btn sec sm" onclick="UI.respDir=UI.respDir==='asc'?'desc':'asc';render()" title="Toggle sort direction">${UI.respDir==='asc'?'↑ Asc':'↓ Desc'}</button>`;
   v.innerHTML=`<div class="between"><div><h1>Responses</h1><p class="sub">Every answer captured — click a card to filter, use Sort to reorder.</p></div>${chanToggle()}</div>
-  <div class="row" style="margin-bottom:14px">${card('all',counts.all,'Candidates')}${card('interested',counts.interested,'Interested')}${card('scheduled',counts.scheduled,'Calls scheduled')}${card('dropped',counts.dropped,'Dropped off')}${card('reject',counts.reject,'Reject')}</div>
+  <div class="row" style="margin-bottom:14px">${card('all',counts.all,'Candidates')}${card('interested',counts.interested,'Interested')}${card('scheduled',counts.scheduled,'Calls scheduled')}${card('revisit',counts.revisit,'Revisit later')}${card('dropped',counts.dropped,'Dropped off')}${card('reject',counts.reject,'Reject')}</div>
   <div class="toolbar" style="margin-bottom:12px"><select onchange="UI.respJob=this.value||'';render()" style="background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:8px 10px">${jobOpts}</select>${sortSel}<span class="hint" style="align-self:center">Showing ${rows.length}${UI.respFilter!=='all'?' · '+UI.respFilter:''}</span></div>
-  <div class="tablewrap"><table><thead><tr><th>Candidate</th><th>Job</th><th>Type</th><th>Stage</th><th>Interested</th><th>Current loc</th><th>Preferred loc</th><th>OK office</th><th>Experience</th><th>Current CTC</th><th>Expected CTC</th><th>Notice</th><th>Skill answers</th><th>Availability</th><th>📅 Calendar</th></tr></thead>
-  <tbody>${rows.map(c=>{const a=CH(c).answers;const j=job(c.jobId)||{};const avail=a.availability||[a.timeSlot,a.day].filter(Boolean).join(', ');const sk=(a.skills||[]).map(s=>s.a).filter(Boolean);const skCell=sk.length?`<span title="${esc((a.skills||[]).map(s=>s.q+': '+s.a).join(' | '))}">${sk.length} answer(s)</span>`:'—';return `<tr><td><b>${esc(c.name)}</b></td><td>${esc(j.title||'')}</td><td>${esc(j.roleType||'—')}</td><td>${badge(CH(c).stage)}</td><td>${esc(a.interested||'—')}</td><td>${esc(a.currentLocation||'—')}</td><td>${esc(a.preferredLocation||'—')}</td><td>${esc(a.workComfortable||'—')}</td><td>${esc(a.experience||'—')}</td><td>${esc(a.currentCTC||'—')}</td><td>${esc(a.expectedCTC||'—')}</td><td>${esc(a.noticePeriod||'—')}</td><td>${skCell}</td><td>${esc(avail||'—')}</td><td>${a.calendarLink?`<a href="${esc(a.calendarLink)}" target="_blank" title="Add to recruiter calendar">📅 Recruiter ↗</a>${a.candidateCalendarLink?`<br><a href="${esc(a.candidateCalendarLink)}" target="_blank" title="Candidate's calendar link">👤 Candidate ↗</a>`:''}`:'—'}</td></tr>`;}).join('')||`<tr><td colspan="15" style="text-align:center;color:var(--muted);padding:30px">No candidates in this view.</td></tr>`}</tbody></table></div>
+  <div class="tablewrap"><table><thead><tr><th>Candidate</th><th>Job</th><th>Type</th><th>Stage</th><th>Interested</th><th>Current loc</th><th>Preferred loc</th><th>OK office</th><th>Experience</th><th>Current CTC</th><th>Expected CTC</th><th>Notice</th><th>Skill answers</th><th>Availability</th><th>Not-interested reason</th><th>Revisit</th><th>📅 Calendar</th></tr></thead>
+  <tbody>${rows.map(c=>{const a=CH(c).answers;const j=job(c.jobId)||{};const avail=a.availability||[a.timeSlot,a.day].filter(Boolean).join(', ');const sk=(a.skills||[]).map(s=>s.a).filter(Boolean);const skCell=sk.length?`<span title="${esc((a.skills||[]).map(s=>s.q+': '+s.a).join(' | '))}">${sk.length} answer(s)</span>`:'—';return `<tr><td><b>${esc(c.name)}</b></td><td>${esc(j.title||'')}</td><td>${esc(j.roleType||'—')}</td><td>${badge(CH(c).stage)}</td><td>${esc(a.interested||'—')}</td><td>${esc(a.currentLocation||'—')}</td><td>${esc(a.preferredLocation||'—')}</td><td>${esc(a.workComfortable||'—')}</td><td>${esc(a.experience||'—')}</td><td>${esc(a.currentCTC||'—')}</td><td>${esc(a.expectedCTC||'—')}</td><td>${esc(a.noticePeriod||'—')}</td><td>${skCell}</td><td>${esc(avail||'—')}</td><td>${esc(a.declineReason||'—')}</td><td>${a.resurfaceDate?`🔁 ${new Date(a.resurfaceDate).toLocaleDateString('en-IN',{month:'short',year:'numeric'})}`:(a.resurfaceAfter||'—')}</td><td>${a.calendarLink?`<a href="${esc(a.calendarLink)}" target="_blank" title="Add to recruiter calendar">📅 Recruiter ↗</a>${a.candidateCalendarLink?`<br><a href="${esc(a.candidateCalendarLink)}" target="_blank" title="Candidate's calendar link">👤 Candidate ↗</a>`:''}`:'—'}</td></tr>`;}).join('')||`<tr><td colspan="17" style="text-align:center;color:var(--muted);padding:30px">No candidates in this view.</td></tr>`}</tbody></table></div>
   <div style="margin-top:14px"><button class="btn ghost sm" onclick="exportCSV()">⬇ Export all to Excel/CSV</button></div>`;
 }
 

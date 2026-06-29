@@ -37,7 +37,7 @@ const last10 = p => normPhone(p).slice(-10);
 const EXP = ['0-1 years', '1-3 years', '3-5 years', '5-8 years', '8+ years'];
 const ROLE = ['Individual Contributor', 'Team Lead / Senior', 'Manager', 'Fresher / Looking for first role', 'Other'];
 const TIME = ['Morning (9 AM - 12 PM)', 'Afternoon (12 PM - 3 PM)', 'Evening (3 PM - 6 PM)'];
-const STAGE_LABEL = { new: 'Not started', outreach: 'Outreach sent', details_form: 'Details form sent', location: 'Asked location', preflocation: 'Preferred location', workpref: 'Work preference', experience: 'Experience', role: 'Current role', currentctc: 'Current CTC', expectedctc: 'Expected CTC', notice: 'Notice period', skills: 'Skill questions', resume: 'Resume request', avail: 'Scheduling', availdate: 'Scheduling', availtime: 'Scheduling', avail_time: 'Scheduling', avail_day: 'Scheduling', scheduled: 'Call scheduled ✓', declined: 'Not interested', location_dropout: 'Location mismatch', notice_dropout: 'Notice too long' };
+const STAGE_LABEL = { new: 'Not started', outreach: 'Outreach sent', details_form: 'Details form sent', location: 'Asked location', preflocation: 'Preferred location', workpref: 'Work preference', experience: 'Experience', role: 'Current role', currentctc: 'Current CTC', expectedctc: 'Expected CTC', notice: 'Notice period', skills: 'Skill questions', resume: 'Resume request', reason: 'Asked why not interested', resurface: 'Resurface timing', avail: 'Scheduling', availdate: 'Scheduling', availtime: 'Scheduling', avail_time: 'Scheduling', avail_day: 'Scheduling', scheduled: 'Call scheduled ✓', declined: 'Not interested', location_dropout: 'Location mismatch', notice_dropout: 'Notice too long' };
 const isTerminal = s => ['scheduled', 'declined', 'location_dropout', 'notice_dropout'].includes(s);
 
 // Classify a job as Managerial (Senior Manager & above) or Individual Contributor, from its title.
@@ -76,6 +76,27 @@ function detectInterest(t) {
   if (/(\byes\b|yeah|yep|yup|\bsure\b|interested|keen|definitely|absolutely|\bok\b|okay|sounds good|why not|i'?m in|go ahead|tell me more|more details|more info|love to|happy to|let'?s|please|good fit|right fit|perfect fit|great fit|will be (a )?(good |great )?fit|i'?ll be fit|be a (good |great )?fit|i'?d be (a )?(good |great )?fit|suits? me|i can do (this|it|the)|i'?m a (good )?(fit|match)|good match|right for me|made for (this|me)|fit for (the|this|group|category|senior|that)|\bhaan\b|\bhan\b|\bhaa\b|\bha\b|\bji\b|ji haan|bilkul|theek hai|thik hai|han ji|haanji|batao|batayein|zaroor|jarur)/.test(t)) return 'yes';
   if (/^\s*(1|a)\b/.test(t)) return 'yes';
   if (/^\s*(2|b)\b/.test(t)) return 'no';
+  return null;
+}
+// ---- "Not interested" reason sub-flow ----
+const REASON_OPTS = ['Not job-hunting right now', "This role isn't the right fit", 'Looking for a more senior role', 'Not keen on Urban Company', 'Something else'];
+const RESURFACE_OPTS = ['Check back in ~1 month', 'Check back in ~3 months', 'Check back in ~6 months', "Please don't reach out again"];
+function detectReason(t) {
+  const tl = (t || '').toLowerCase();
+  if (/not job ?hunting|not (actively )?looking|not searching|not on the market|happy (where|with|in)|settled|currently (employed|happy)|not (looking )?(for|to)( a)? (change|switch|move)|don'?t want to (switch|change|move)|not active/.test(tl)) return 'not_looking';
+  if (/senior|higher|bigger|lead role|leadership|head\b|director|\bvp\b|more senior|next level|sr\.?\s|growth role/.test(tl)) return 'senior';
+  if (/urban company|\buc\b|this company|your company|the company|company itself|brand/.test(tl)) return 'company';
+  if (/role|fit|profile|\bjd\b|responsibilit|domain|not my (area|field|domain)|different (field|domain|area)|category|function/.test(tl)) return 'role';
+  return 'other';
+}
+function parseResurfaceMonths(t) {
+  const tl = (t || '').toLowerCase();
+  if (/don'?t|do not|never|stop|remove|no thanks|not at all/.test(tl)) return 0;     // do not resurface
+  if (/\b1\b|one|a month|next month|month/.test(tl) && !/3|6|three|six/.test(tl)) return 1;
+  if (/\b3\b|three|quarter/.test(tl)) return 3;
+  if (/\b6\b|six|half/.test(tl)) return 6;
+  if (/\b2\b|two/.test(tl)) return 2;
+  if (/\b12\b|year|twelve/.test(tl)) return 12;
   return null;
 }
 function detectComfort(t) {
@@ -260,6 +281,8 @@ function stagePrompt(stage, c, j) {
     case 'currentctc': return `Could you share your *current CTC* (annual, in LPA)? Please reply with a number — e.g. "12" or "12 LPA". (Required to proceed.)`;
     case 'expectedctc': return `And your *expected CTC* (annual, in LPA)? Please reply with a number — e.g. "15". (Required to proceed.)`;
     case 'notice': return `What is your *notice period*? (for example: "immediate", "30 days", or "2 months")`;
+    case 'reason': return `No worries at all! 🙂 May I ask what's holding you back?\n\n${REASON_OPTS.map(o => '• ' + o).join('\n')}\n\n(Just reply in a few words.)`;
+    case 'resurface': return `Got it — you're not actively looking right now. When should we check back with you?\n\n${RESURFACE_OPTS.map(o => '• ' + o).join('\n')}`;
     case 'resume': return `One last thing — do you have an *updated resume* you'd like to share? You can paste a Google Drive link or any public link. If not, just say *"skip"* and we'll move on. 📄`;
     case 'avail':
     case 'availdate': return `Brilliant! 🎉 Let's set up your call. Which *date* works best for you?\n\n${availDateOptions().map(o => '• ' + o.label).join('\n')}\n\n(Reply with a date, e.g. "25 June".)`;
@@ -374,14 +397,36 @@ function handleIncoming(c, ch, text, skipPush) {
     case 'outreach': {
       const v = detectInterest(text);
       if (v === 'yes') { ch.answers.interested = 'Yes'; advance(c, ch, 'location', out); }
-      else if (v === 'no') { ch.answers.interested = 'No'; ch.stage = 'declined'; out.push("No worries! We'll keep your profile in our database and reach out if a better fit comes up. Best of luck! 🙏"); }
-      else if (v === 'maybe') {
-        // Soft hesitation ("not sure I'm a fit", "not really looking") → re-question once, then respect it.
-        ch.softNoCount = (ch.softNoCount || 0) + 1;
-        if (ch.softNoCount >= 2) { ch.answers.interested = 'No'; ch.stage = 'declined'; out.push("Totally understand — I'll step back for now. 🙏 If things change, just reply here anytime and we'll pick it up. All the best!"); }
-        else { out.push(`I hear you! 😊 Honestly, a lot of strong people aren't sure at first — this *${j ? j.title : 'role'}* offers real growth, and our recruiter can clear up whether it's the right fit on a quick call. Would you be open to exploring it? (If now isn't the time, just say so and I'll step back.)`); }
+      else if (v === 'no' || v === 'maybe') {
+        // Not interested (firm or soft) → ask WHY before letting them go.
+        ch.answers.interested = 'No';
+        advance(c, ch, 'reason', out);
       }
       else { if (questionLike(text)) sideQuestion(c, ch, text, out, false); out.push(clarify('outreach', j)); }
+      break;
+    }
+    case 'reason': {
+      const r = detectReason(text);
+      const label = { not_looking: 'Not actively looking right now', senior: 'Wants a more senior role', company: 'Not keen on Urban Company', role: "Role isn't the right fit", other: text.trim() }[r];
+      ch.answers.declineReason = label;
+      if (r === 'not_looking') { advance(c, ch, 'resurface', out); break; }
+      ch.stage = 'declined';
+      if (r === 'senior') out.push("Thanks for sharing! 🙏 I've noted you're after a more senior role — we'll reach out if something at that level opens up. All the best!");
+      else if (r === 'company') out.push("Totally understand, and thanks for your honesty. 🙏 We won't keep messaging — if you ever reconsider, just reply here. Best of luck!");
+      else if (r === 'role') out.push("Got it — thanks! 🙏 I'll keep your profile active and reach out when a better-matching role comes up.");
+      else out.push("Thank you for letting me know! 🙏 We'll keep your profile and reach out if a better fit appears. All the best!");
+      break;
+    }
+    case 'resurface': {
+      const months = parseResurfaceMonths(text);
+      if (months === null) { out.push(`No problem! Roughly when should we check back? ${RESURFACE_OPTS.map(o => '• ' + o).join('  ')}`); break; }
+      ch.stage = 'declined';
+      ch.answers.declineReason = ch.answers.declineReason || 'Not actively looking right now';
+      if (months === 0) { c.dnc = true; ch.answers.resurfaceAfter = 'Do not resurface'; out.push("Understood — I won't reach out again. Wishing you all the best! 🙏"); break; }
+      const d = new Date(); d.setMonth(d.getMonth() + months);
+      ch.answers.resurfaceAfter = `~${months} month${months > 1 ? 's' : ''}`;
+      ch.answers.resurfaceDate = d.toISOString();
+      out.push(`Perfect — I'll resurface your profile around *${d.toLocaleString('en-IN', { month: 'long', year: 'numeric' })}* and reach out then. Thanks, and all the best till then! 🙏`);
       break;
     }
     case 'location': {
@@ -601,6 +646,8 @@ function rulesUnderstand(c, ch, text) {
     case 'notice': return /\bserv(e|ing)?\b|on notice|notice running|notice going on/i.test(t) || detectNoticeDays(t) !== null || q;
     case 'skills': return true;                              // any text recorded as the answer
     case 'resume': return true;                              // any text / "skip" recorded
+    case 'reason': return true;                              // any reason text is mapped to a category
+    case 'resurface': return parseResurfaceMonths(t) !== null || q;
     case 'avail': case 'availdate': return parseDateLoose(t) !== null || q;
     case 'availtime': return matchTimeSlot(t) !== null;
     default: return true;
@@ -1124,6 +1171,8 @@ function pollForStage(stage, c, j) {
     case 'workpref':   return { name: `This role is in ${j ? j.location : ''} — ${j ? j.workingDays : ''} days/week from office${j && j.remote === 'No' ? ' (no remote option)' : ''}. Are you comfortable with this?`, options: ['Yes, I\'m comfortable', 'No, that won\'t work'] };
     case 'experience': return { name: 'How many years of work experience do you have?', options: ['0–2 years', '3–5 years', '5–8 years', '8+ years'] };
     case 'notice':     return { name: 'What is your notice period?', options: ['Immediate', '15 days', '30 days', '60 days', '90+ days', 'Currently serving notice'] };
+    case 'reason':     return { name: 'No worries! 🙂 May I ask what\'s holding you back?', options: REASON_OPTS };
+    case 'resurface':  return { name: 'Got it — not actively looking right now. When should we check back?', options: RESURFACE_OPTS };
     case 'avail':
     case 'availdate':  return { name: 'Which date works best for a quick call? 📅', options: availDateOptions().map(o => o.label) };
     case 'availtime':  return { name: 'And which time slot suits you? 🕘', options: TIME_SLOTS.map(s => s.label) };
