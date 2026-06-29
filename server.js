@@ -66,17 +66,19 @@ const questionLike = t => /\?/.test(t) || TEMPLATES.some(tpl => tpl.keys.some(k 
 /* ---------------- Natural-language understanding ---------------- */
 function detectInterest(t) {
   t = ' ' + t.toLowerCase() + ' ';
-  if (/(not interested|no thanks|no thank|not right now|not looking|not keen|already (have|placed|employed|working)|happy where|i'?ll pass|\bno\b|\bnope\b|\bnah\b|decline)/.test(t)) return 'no';
-  if (/(\byes\b|yeah|yep|yup|\bsure\b|interested|keen|definitely|absolutely|\bok\b|okay|sounds good|why not|i'?m in|go ahead|tell me more|more details|more info|love to|happy to|let'?s|please)/.test(t)) return 'yes';
-  if (/(maybe|perhaps|depends|not sure|possibly|might|could be)/.test(t)) return 'maybe';
+  // No / not interested (English + Hindi/Hinglish)
+  if (/(not interested|no thanks|no thank|not right now|not looking|not keen|already (have|placed|employed|working)|happy where|i'?ll pass|\bno\b|\bnope\b|\bnah\b|decline|nahi|nahin|nai|mat karo|interested nahi|nahi chahiye)/.test(t)) return 'no';
+  // Yes / interested (English + Hindi/Hinglish)
+  if (/(\byes\b|yeah|yep|yup|\bsure\b|interested|keen|definitely|absolutely|\bok\b|okay|sounds good|why not|i'?m in|go ahead|tell me more|more details|more info|love to|happy to|let'?s|please|\bhaan\b|\bhan\b|\bhaa\b|\bha\b|\bji\b|ji haan|bilkul|theek hai|thik hai|han ji|haanji|batao|batayein|zaroor|jarur)/.test(t)) return 'yes';
+  if (/(maybe|perhaps|depends|not sure|possibly|might|could be|shayad|pata nahi|dekhta hu|dekhte hai)/.test(t)) return 'maybe';
   if (/^\s*(1|a)\b/.test(t)) return 'yes';
   if (/^\s*(2|b)\b/.test(t)) return 'no';
   return null;
 }
 function detectComfort(t) {
   t = ' ' + t.toLowerCase() + ' ';
-  if (/(\bno\b|not comfortable|can'?t|cannot|prefer|different location|too far|not possible|won'?t work|unable|not ok)/.test(t)) return 'no';
-  if (/(\byes\b|yeah|\bsure\b|comfortable|\bfine\b|\bok\b|okay|no problem|works for me|i can|that'?s fine|happy to|willing)/.test(t)) return 'yes';
+  if (/(\bno\b|not comfortable|can'?t|cannot|prefer|different location|too far|not possible|won'?t work|unable|not ok|nahi|nahin|nai|comfortable nahi|nahi ho payega|mushkil)/.test(t)) return 'no';
+  if (/(\byes\b|yeah|\bsure\b|comfortable|\bfine\b|\bok\b|okay|no problem|works for me|i can|that'?s fine|happy to|willing|\bhaan\b|\bhan\b|\bji\b|bilkul|theek hai|thik hai|ho jayega|chalega|koi problem nahi)/.test(t)) return 'yes';
   if (/^\s*(1|a)\b/.test(t)) return 'yes';
   if (/^\s*(2|b)\b/.test(t)) return 'no';
   return null;
@@ -85,10 +87,14 @@ function parseLetter(t, max) { t = t.trim().toLowerCase(); const m = t.match(/^\
 function bucketExp(y) { if (y <= 1) return EXP[0]; if (y <= 3) return EXP[1]; if (y <= 5) return EXP[2]; if (y <= 8) return EXP[3]; return EXP[4]; }
 function detectExperience(t) {
   const tl = t.toLowerCase();
-  if (/\b(fresher|fresh|no experience|just graduated|final year|student)\b/.test(tl)) return EXP[0];
-  // Explicit "X years / yrs" always means years of experience → bucket it.
-  let m = tl.match(/(\d+(?:\.\d+)?)\s*\+?\s*(?:years?|yrs?|yr)\b/);
+  if (/\b(fresher|fresh|no experience|just graduated|final year|student|naya|koi experience nahi)\b/.test(tl)) return EXP[0];
+  // Explicit "X years / yrs / saal" always means years of experience → bucket it.
+  let m = tl.match(/(\d+(?:\.\d+)?)\s*\+?\s*(?:years?|yrs?|yr|saal|sal|varsh|years\s*ka|saal\s*ka)\b/);
   if (m) return bucketExp(parseFloat(m[1]));
+  // Hindi number words for years (optional) — common small values.
+  const hindiNums = { ek: 1, do: 2, teen: 3, char: 4, chaar: 4, paanch: 5, panch: 5, chhe: 6, che: 6, saat: 7, aath: 8, nau: 9, das: 10 };
+  const hm = tl.match(/\b(ek|do|teen|chaar|char|paanch|panch|chhe|che|saat|aath|nau|das)\b\s*(?:saal|sal|varsh|years?)/);
+  if (hm) return bucketExp(hindiNums[hm[1]]);
   // A standalone small number/letter = menu option (1-5).
   const i = parseLetter(t, 5); if (i != null) return EXP[i];
   // A bare number with no menu context (e.g. "10+") = years.
@@ -126,6 +132,13 @@ function detectAck(t) {
 function wantsReschedule(t) {
   return /\b(reschedul|re-?schedul|postpone|change.*(time|slot|date|call)|different (time|slot|day)|another (time|slot|day)|can'?t make|cannot make|won'?t make|move (the )?call|new (time|slot)|shift the call)/i.test(t || '');
 }
+// ---- Deterministic "smart intent" detectors (no AI needed) ----
+function detectOptOut(t) { return /\b(stop|unsubscribe|opt ?out|remove me|do ?n'?t (message|contact|text|call) me|dont (message|contact|text|call) me|leave me alone|do not contact|stop messaging|stop texting|block me|mat karo message|message mat)\b/i.test(t || ''); }
+function detectWrongNumber(t) { return /\b(wrong (number|person)|you have the wrong|not the right person|this is not [a-z]+ ?'?s? number|galat number|galat insaan)\b/i.test(t || ''); }
+function detectHandoff(t) { return /\b((talk|speak|connect|call|chat) (to|with|me to|me with)?\s*(a |an )?(human|person|recruiter|someone|agent|representative)|real (person|human|recruiter)|actual (person|human|recruiter)|human (please|agent)|baat kara|kisi se baat)\b/i.test(t || ''); }
+function detectScamDoubt(t) { return /\b(who (is this|are you|'?s this)|kaun (ho|hai)|is this (real|legit|genuine|a scam|spam|fake|fraud)|is it (real|legit|genuine)|are you (real|a bot|genuine)|scam|spam|fraud|legit\??|fake|real (job|opportunity|company)\??)\b/i.test(t || ''); }
+function detectBusy(t) { return /\b((call|text|message|contact|reach|ping|connect) me (later|tomorrow|after|in a|next)|busy (right now|at the moment|currently|today)|i'?m busy|i am busy|talk later|reach out later|some other time|another time|abhi (busy|nahi)|thoda busy|baad (me|mein)|kal baat|busy hu)\b/i.test(t || ''); }
+
 // Is this message actually about the role / hiring process (vs. casual chit-chat)?
 // Used after a candidate is finished (scheduled/declined) so we don't reply to random messages.
 function isRecruitmentRelevant(t) {
@@ -288,6 +301,33 @@ function handleIncoming(c, ch, text, skipPush) {
   const j = jobOf(c), out = [];
   if (!skipPush) ch.transcript.push({ from: 'candidate', text, ts: now() });   // AI path logs the original message itself
   ch.nudgeCount = 0;   // they replied — reset the 1-day follow-up counter
+
+  // ---- Smart intents that can arrive at ANY stage (handled by free keyword rules) ----
+  if (ch.pending !== 'last_working_day') {
+    if (detectOptOut(text)) {
+      c.dnc = true; if (!isTerminal(ch.stage)) ch.stage = 'declined';
+      return finish(ch, ["Understood — I won't message you again. Wishing you all the best! 🙏"]);
+    }
+    if (detectWrongNumber(text)) {
+      c.dnc = true; ch.flags.push({ q: '[Wrong number] ' + text, ts: now(), resolved: false });
+      return finish(ch, ["Apologies for the mix-up — I'll remove this number. Have a great day!"]);
+    }
+    if (detectHandoff(text)) {
+      ch.flags.push({ q: '[Wants a human] ' + text, ts: now(), resolved: false });
+      const out2 = ["Of course! 🙌 I'll have our recruiter reach out to you personally."];
+      if (!isTerminal(ch.stage) && ch.stage !== 'new') { const p = stagePrompt(ch.stage, c, j); if (p) out2.push(p); }
+      return finish(ch, out2);
+    }
+    if (detectScamDoubt(text)) {
+      const out2 = [`Great question — this is a genuine outreach from *${db.company}* about our *${j ? j.title : ''}* role. 😊 No spam, I promise! Feel free to look us up. Happy to tell you more.`];
+      if (!isTerminal(ch.stage) && ch.stage !== 'new') { const p = stagePrompt(ch.stage, c, j); if (p) out2.push(p); }
+      return finish(ch, out2);
+    }
+    if (detectBusy(text) && !isTerminal(ch.stage)) {
+      ch.nudgeCount = 0;   // we'll follow up later
+      return finish(ch, ["No problem at all — take your time. 😊 I'll check back later. Just reply here whenever you're free."]);
+    }
+  }
 
   if (ch.pending === 'last_working_day') {
     ch.pending = null;
