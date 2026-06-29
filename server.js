@@ -64,10 +64,12 @@ function matchTemplate(text, j) { const t = text.toLowerCase(); for (const tpl o
 const questionLike = t => /\?/.test(t) || TEMPLATES.some(tpl => tpl.keys.some(k => t.toLowerCase().includes(k)));
 
 /* ---------------- Natural-language understanding ---------------- */
+// A bare "no" that is NOT part of "no problem / no issue / no worries / no doubt" (those mean YES).
+const NO_WORD = /\bno\b(?!\s*(problem|issue|issues|worr|doubt|probs|biggie|prob\b))|\bnope\b|\bnah\b/;
 function detectInterest(t) {
   t = ' ' + t.toLowerCase() + ' ';
   // No / not interested (English + Hindi/Hinglish)
-  if (/(not interested|no thanks|no thank|not right now|not looking|not keen|already (have|placed|employed|working)|happy where|i'?ll pass|\bno\b|\bnope\b|\bnah\b|decline|nahi|nahin|nai|mat karo|interested nahi|nahi chahiye)/.test(t)) return 'no';
+  if (/(not interested|no thanks|no thank|not right now|not looking|not keen|already (have|placed|employed|working)|happy where|i'?ll pass|decline|nahin?\b|\bnai\b|mat karo|interested nahi|nahi chahiye)/.test(t) || NO_WORD.test(t)) return 'no';
   // Yes / interested (English + Hindi/Hinglish)
   if (/(\byes\b|yeah|yep|yup|\bsure\b|interested|keen|definitely|absolutely|\bok\b|okay|sounds good|why not|i'?m in|go ahead|tell me more|more details|more info|love to|happy to|let'?s|please|\bhaan\b|\bhan\b|\bhaa\b|\bha\b|\bji\b|ji haan|bilkul|theek hai|thik hai|han ji|haanji|batao|batayein|zaroor|jarur)/.test(t)) return 'yes';
   if (/(maybe|perhaps|depends|not sure|possibly|might|could be|shayad|pata nahi|dekhta hu|dekhte hai)/.test(t)) return 'maybe';
@@ -77,8 +79,10 @@ function detectInterest(t) {
 }
 function detectComfort(t) {
   t = ' ' + t.toLowerCase() + ' ';
-  if (/(\bno\b|not comfortable|can'?t|cannot|prefer|different location|too far|not possible|won'?t work|unable|not ok|nahi|nahin|nai|comfortable nahi|nahi ho payega|mushkil)/.test(t)) return 'no';
-  if (/(\byes\b|yeah|\bsure\b|comfortable|\bfine\b|\bok\b|okay|no problem|works for me|i can|that'?s fine|happy to|willing|\bhaan\b|\bhan\b|\bji\b|bilkul|theek hai|thik hai|ho jayega|chalega|koi problem nahi)/.test(t)) return 'yes';
+  // Clear NO signals (note: "no problem / no worries" are NOT a no — see NO_WORD).
+  const strongNo = /(not comfortable|can'?t|cannot|won'?t work|won'?t be able|not possible|unable|\bnot ok\b|too far|prefer (remote|to work remote|wfh|work from home|a different|another|other)|relocat\w* (is )?(not|hard|difficult|an issue|a problem)|comfortable nahi|nahi ho payega|mushkil)/;
+  if (strongNo.test(t) || NO_WORD.test(t)) return 'no';
+  if (/(\byes\b|yeah|yup|\bsure\b|comfortable|\bfine\b|\bok\b|okay|no problem|no issue|no worries|works for me|that works|i can do|that'?s fine|happy to|willing|\bhaan\b|\bhan\b|\bji\b|bilkul|theek hai|thik hai|ho jayega|chalega|koi (problem|dikkat) nahi)/.test(t)) return 'yes';
   if (/^\s*(1|a)\b/.test(t)) return 'yes';
   if (/^\s*(2|b)\b/.test(t)) return 'no';
   return null;
@@ -142,7 +146,7 @@ function detectBusy(t) { return /\b((call|text|message|contact|reach|ping|connec
 // Is this message actually about the role / hiring process (vs. casual chit-chat)?
 // Used after a candidate is finished (scheduled/declined) so we don't reply to random messages.
 function isRecruitmentRelevant(t) {
-  const kw = /\b(role|job|position|vacanc|ctc|salary|package|compensation|stipend|hike|location|office|onsite|on-site|remote|hybrid|wfh|notice period|joining|join date|offer|interview|recruiter|\bhr\b|opportunit|j\.?d\b|description|profile|hiring|process|shortlist|selected|next round|next step|timing|slot|schedule|call|meeting|appointment|reschedul|experience|skill|company|team|work)\b/i;
+  const kw = /\b(role|job|position|vacanc|ctc|salary|package|compensation|stipend|hike|location|office|onsite|on-site|remote|hybrid|wfh|notice period|joining|join date|offer|interview|recruiter|\bhr\b|opportunit|j\.?d\b|description|profile|hiring|process|shortlist|selected|next round|next step|timing|\btime\b|slot|schedule|call|meeting|appointment|reschedul|experience|skill|company|team|work|address|venue|directions|where|link|zoom|google ?meet|gmeet|teams|phone|number to call|format|reschedule|confirm)\b/i;
   return /\?/.test(t || '') ? kw.test(t) : false;   // must be a question AND mention something role-related
 }
 function detectNoticeDays(t) {
@@ -213,8 +217,11 @@ function parseAmount(text) { const m = (text || '').match(/\d+(?:\.\d+)?/); retu
 function parseDateLoose(t) {
   t = (t || '').toLowerCase(); const now = new Date();
   if (/day after/.test(t)) { const d = new Date(now); d.setDate(d.getDate() + 2); return d; }
-  if (/tomorrow/.test(t)) { const d = new Date(now); d.setDate(d.getDate() + 1); return d; }
-  if (/\btoday\b/.test(t)) return new Date(now);
+  if (/tomorrow|tmrw|tmrl/.test(t)) { const d = new Date(now); d.setDate(d.getDate() + 1); return d; }
+  if (/\btoday\b|right now|anytime|asap|whenever/.test(t)) return new Date(now);
+  // "this/next weekend" → upcoming Saturday (next week's if "next weekend").
+  if (/weekend/.test(t)) { const d = new Date(now); let add = (6 - d.getDay() + 7) % 7; if (add === 0) add = 7; if (/next weekend/.test(t)) add += 7; d.setDate(d.getDate() + add); return d; }
+  if (/next week/.test(t)) { const d = new Date(now); d.setDate(d.getDate() + 7); return d; }
   const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
   let dd = null, mm = null, m;
   if ((m = t.match(/(\d{1,2})\s*(?:st|nd|rd|th)?\s*(?:of\s*)?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/))) { dd = +m[1]; mm = months.indexOf(m[2]); }
