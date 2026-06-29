@@ -68,11 +68,12 @@ const questionLike = t => /\?/.test(t) || TEMPLATES.some(tpl => tpl.keys.some(k 
 const NO_WORD = /\bno\b(?!\s*(problem|issue|issues|worr|doubt|probs|biggie|prob\b))|\bnope\b|\bnah\b/;
 function detectInterest(t) {
   t = ' ' + t.toLowerCase() + ' ';
-  // No / not interested (English + Hindi/Hinglish) — including "not a fit"
-  if (/(not interested|no thanks|no thank|not right now|not looking|not keen|already (have|placed|employed|working)|happy where|i'?ll pass|decline|not a (good )?fit|not the right fit|don'?t (think|feel)[^.]{0,15}fit|isn'?t a fit|nahin?\b|\bnai\b|mat karo|interested nahi|nahi chahiye)/.test(t) || NO_WORD.test(t)) return 'no';
-  // Yes / interested (English + Hindi/Hinglish) — including implicit interest like "I'd be a good fit"
+  // HARD no → decline immediately
+  if (/(not interested|no thanks|no thank|i'?ll pass|please decline|\bdecline\b|already (have a job|placed|employed|working elsewhere|sorted)|remove me|\bstop\b|do ?n'?t contact|leave me alone|interested nahi|nahi chahiye|bilkul nahi)/.test(t) || NO_WORD.test(t)) return 'no';
+  // SOFT hesitation → re-question (return 'maybe'). Checked BEFORE "yes" so "not a good fit" isn't read as the "good fit" yes-phrase.
+  if (/(not (a )?(good |right |perfect )?fit|don'?t (think|feel)[^.]{0,18}fit|isn'?t a fit|not sure|not so sure|not looking|not actively looking|not looking out|maybe not|i don'?t think so|not really|not for me|on the fence|need to think|thinking about it|let me think|maybe|perhaps|depends|possibly|might|could be|shayad|pata nahi|sochna|dekhta hu|dekhte hai)/.test(t)) return 'maybe';
+  // YES / interested — including implicit interest like "I'd be a good fit"
   if (/(\byes\b|yeah|yep|yup|\bsure\b|interested|keen|definitely|absolutely|\bok\b|okay|sounds good|why not|i'?m in|go ahead|tell me more|more details|more info|love to|happy to|let'?s|please|good fit|right fit|perfect fit|great fit|will be (a )?(good |great )?fit|i'?ll be fit|be a (good |great )?fit|i'?d be (a )?(good |great )?fit|suits? me|i can do (this|it|the)|i'?m a (good )?(fit|match)|good match|right for me|made for (this|me)|fit for (the|this|group|category|senior|that)|\bhaan\b|\bhan\b|\bhaa\b|\bha\b|\bji\b|ji haan|bilkul|theek hai|thik hai|han ji|haanji|batao|batayein|zaroor|jarur)/.test(t)) return 'yes';
-  if (/(maybe|perhaps|depends|not sure|possibly|might|could be|shayad|pata nahi|dekhta hu|dekhte hai)/.test(t)) return 'maybe';
   if (/^\s*(1|a)\b/.test(t)) return 'yes';
   if (/^\s*(2|b)\b/.test(t)) return 'no';
   return null;
@@ -374,7 +375,12 @@ function handleIncoming(c, ch, text, skipPush) {
       const v = detectInterest(text);
       if (v === 'yes') { ch.answers.interested = 'Yes'; advance(c, ch, 'location', out); }
       else if (v === 'no') { ch.answers.interested = 'No'; ch.stage = 'declined'; out.push("No worries! We'll keep your profile in our database and reach out if a better fit comes up. Best of luck! 🙏"); }
-      else if (v === 'maybe') { out.push("Totally understand — take your time! 😊 The role offers strong growth and our recruiter can answer any specifics. Do let me know if you'd like to explore it."); }
+      else if (v === 'maybe') {
+        // Soft hesitation ("not sure I'm a fit", "not really looking") → re-question once, then respect it.
+        ch.softNoCount = (ch.softNoCount || 0) + 1;
+        if (ch.softNoCount >= 2) { ch.answers.interested = 'No'; ch.stage = 'declined'; out.push("Totally understand — I'll step back for now. 🙏 If things change, just reply here anytime and we'll pick it up. All the best!"); }
+        else { out.push(`I hear you! 😊 Honestly, a lot of strong people aren't sure at first — this *${j ? j.title : 'role'}* offers real growth, and our recruiter can clear up whether it's the right fit on a quick call. Would you be open to exploring it? (If now isn't the time, just say so and I'll step back.)`); }
+      }
       else { if (questionLike(text)) sideQuestion(c, ch, text, out, false); out.push(clarify('outreach', j)); }
       break;
     }
