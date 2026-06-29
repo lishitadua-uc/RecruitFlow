@@ -557,6 +557,7 @@ function rulesUnderstand(c, ch, text) {
 async function aiProcess(c, ch, text) {
   const d = await aiDecide(c, ch, text);
   if (!d) return handleIncoming(c, ch, text);   // fall back to rules
+  ch._lastAI = d;                                // expose decision (used by the test lab)
   ch.transcript.push({ from: 'candidate', text, ts: now() });
   ch.nudgeCount = 0;
   if (d.flagForRecruiter) ch.flags.push({ q: text, ts: now(), resolved: false, ai: true });
@@ -1258,6 +1259,31 @@ app.post('/api/settings', (req, res) => {
   save(); res.json({ ok: true });
 });
 app.post('/api/email/test', async (req, res) => { try { if (!mailerReady()) throw new Error('Add email + app password first.'); await sendEmail(db.settings.email, 'RecruitFlow test ✅', 'Your RecruitFlow email is configured correctly.'); emailStatus = 'ok'; res.json({ ok: true }); } catch (e) { emailStatus = 'error'; res.status(400).json({ error: e.message }); } });
+// Test lab: run a sample candidate message through the same brain WITHOUT touching real candidates.
+app.post('/api/simulate', async (req, res) => {
+  try {
+    const { jobId, stage, message, answers } = req.body;
+    if (!message || !message.trim()) throw new Error('Type a candidate message to test.');
+    const j = db.jobs.find(x => x.id === jobId) || db.jobs[0];
+    if (!j) throw new Error('Create a job first.');
+    // Throwaway candidate — not added to db, calendar/email side effects suppressed.
+    const fake = { id: '__sim__', jobId: j.id, name: 'Test Candidate', email: 'test@example.com', phone: '+910000000000', dnc: false, wa: newChannel(), em: newChannel() };
+    fake.wa.stage = stage || 'outreach';
+    fake.wa.answers = Object.assign({}, answers || {});
+    fake.wa.calendarDone = true;   // prevent real calendar insert / invite emails during a test
+    const ch = fake.wa;
+    const understood = rulesUnderstand(fake, ch, message);
+    const willUseAI = aiReady() && !understood;
+    let replies, decision = null;
+    if (willUseAI) { replies = await aiProcess(fake, ch, message); decision = ch._lastAI || null; }
+    else { replies = handleIncoming(fake, ch, message); }
+    res.json({
+      engine: willUseAI ? 'ai' : (understood ? 'rules' : 'rules (AI off — add a key to use AI here)'),
+      aiReady: aiReady(), understood, decision,
+      replies: (replies || []).map(stripMd), newStage: ch.stage,
+    });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
 app.post('/api/ai/test', async (req, res) => {
   try {
     const client = aiClient(); if (!client) throw new Error('Add your Anthropic API key first.');
