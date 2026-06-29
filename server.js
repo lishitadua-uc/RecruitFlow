@@ -962,6 +962,7 @@ async function handleEmailFormReply(c, emailParsed) {
 // WhatsApp-first: if a candidate never replies on WhatsApp within 24h, automatically send the email outreach.
 const FOLLOWUP_MS = 24 * 60 * 60 * 1000;
 async function checkEmailFollowups() {
+  if (!db.settings.emailFollowups) return;   // email channel paused — WhatsApp only (toggle in settings to re-enable)
   if (!mailerReady()) return;
   for (const c of db.candidates) {
     if (c.dnc) continue;
@@ -974,8 +975,8 @@ async function checkEmailFollowups() {
 }
 if (!process.env.RF_TEST) { setInterval(() => checkEmailFollowups().catch(() => {}), 30 * 60 * 1000); setTimeout(() => checkEmailFollowups().catch(() => {}), 20000); }
 
-/* ---------------- 1-day follow-up nudge (any unanswered message: outreach OR a question) ---------------- */
-const NUDGE_MS = 24 * 60 * 60 * 1000;   // nudge after 1 day of silence
+/* ---------------- Follow-up nudges: 1st at 24h of silence, 2nd at 48h after the 1st reminder ---------------- */
+const NUDGE_MS = 24 * 60 * 60 * 1000;   // base unit (24h)
 const MAX_NUDGES = 2;                    // at most 2 gentle reminders, then leave them be
 function nudgeText(c, n) {
   if (n >= 1) return `Hi ${c.name}, just checking in once more 😊 — if now isn't the right time, no problem at all. Whenever you're ready, simply reply here and we'll pick up where we left off.`;
@@ -991,7 +992,8 @@ async function checkNudges() {
       const last = t[t.length - 1];
       if (last.from !== 'system') continue;                                   // last word was ours; we're waiting on candidate
       if ((ch.nudgeCount || 0) >= MAX_NUDGES) continue;                       // already nudged the max times
-      if (Date.now() - new Date(last.ts).getTime() < NUDGE_MS) continue;      // less than a day of silence
+      const gap = (ch.nudgeCount || 0) === 0 ? NUDGE_MS : 2 * NUDGE_MS;       // 1st nudge after 24h; 2nd after 48h from the 1st
+      if (Date.now() - new Date(last.ts).getTime() < gap) continue;
       const isWA = (ch === c.wa);
       const text = nudgeText(c, ch.nudgeCount || 0);
       try {
@@ -1309,7 +1311,7 @@ app.post('/api/email/test', async (req, res) => { try { if (!mailerReady()) thro
 // Test lab: run a sample candidate message through the same brain WITHOUT touching real candidates.
 app.post('/api/simulate', async (req, res) => {
   try {
-    const { jobId, stage, message, answers } = req.body;
+    const { jobId, stage, message, answers, pending } = req.body;
     if (!message || !message.trim()) throw new Error('Type a candidate message to test.');
     const j = db.jobs.find(x => x.id === jobId) || db.jobs[0];
     if (!j) throw new Error('Create a job first.');
@@ -1317,6 +1319,7 @@ app.post('/api/simulate', async (req, res) => {
     const fake = { id: '__sim__', jobId: j.id, name: 'Test Candidate', email: 'test@example.com', phone: '+910000000000', dnc: false, wa: newChannel(), em: newChannel() };
     fake.wa.stage = stage || 'outreach';
     fake.wa.answers = Object.assign({}, answers || {});
+    fake.wa.pending = pending || null;
     fake.wa.calendarDone = true;   // prevent real calendar insert / invite emails during a test
     const ch = fake.wa;
     const understood = rulesUnderstand(fake, ch, message);
@@ -1328,6 +1331,7 @@ app.post('/api/simulate', async (req, res) => {
       engine: willUseAI ? 'ai' : (understood ? 'rules' : 'rules (AI off — add a key to use AI here)'),
       aiReady: aiReady(), understood, decision,
       replies: (replies || []).map(stripMd), newStage: ch.stage,
+      answers: ch.answers, pending: ch.pending, dnc: fake.dnc,   // thread these back for a multi-turn trial
     });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });

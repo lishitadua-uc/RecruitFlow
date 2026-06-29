@@ -149,9 +149,9 @@ function renderJobDetail(v){
   v.innerHTML=`<div class="crumb"><a onclick="UI.jobId=null;render()">← All jobs</a></div>
   <div class="between"><div><h1>${esc(j.title)}</h1><p class="sub">${esc(j.department||'')} · ${esc(j.location||'')} · ${j.workingDays} days/week · ${j.remote==='Yes'?'Remote applicable':'On-site only'}</p></div>
     <div class="toolbar"><button class="btn sec sm" onclick="jobForm('${j.id}')">Edit</button>
-      <button class="btn run" id="runBtn" onclick="runJob('${j.id}')">▶ RUN — WhatsApp first</button>
-      <button class="btn sm" id="runEmailBtn" style="background:var(--blue)" onclick="runEmailJob('${j.id}')">✉️ Send Email now</button></div></div>
-  <div class="banner" style="background:var(--bluebg);border-color:#1e3a5f;color:#93c5fd">⏱️ <b>WhatsApp-first:</b> RUN messages candidates on WhatsApp. If someone doesn't reply within <b>24 hours</b>, they're automatically emailed the same outreach. (Use "Send Email now" only to email immediately.)</div>
+      <button class="btn run" id="runBtn" onclick="runJob('${j.id}')">▶ RUN — WhatsApp</button>
+      <button class="btn sm" id="runEmailBtn" style="background:var(--blue)" onclick="runEmailJob('${j.id}')" title="Email is paused — this still works if you want to email someone manually">✉️ Send Email (manual)</button></div></div>
+  <div class="banner" style="background:var(--bluebg);border-color:#1e3a5f;color:#93c5fd">📱 <b>WhatsApp only.</b> RUN messages candidates on WhatsApp and runs the whole screening there. If someone goes quiet, they get a reminder at <b>24h</b>, then again <b>48h</b> later. Automatic email is <b>paused</b> — the "Send Email (manual)" button still works if you ever want it.</div>
   ${STATUS.waStatus!=='ready'?`<div class="banner">⚠️ WhatsApp isn't connected yet. <a style="color:#fcd34d;text-decoration:underline;cursor:pointer" onclick="openConnect()">Connect now</a> before running WhatsApp outreach.</div>`:''}
   ${!STATUS.emailReady?`<div class="banner">✉️ Email isn't set up yet. <a style="color:#fcd34d;text-decoration:underline;cursor:pointer" onclick="setTab('settings')">Add your email in Settings</a> to send email outreach.</div>`:''}
   <div class="row" style="margin-bottom:16px">
