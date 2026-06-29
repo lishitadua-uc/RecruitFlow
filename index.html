@@ -347,7 +347,7 @@ async function renderSettings(v){
   </div>
 
   <div class="card"><h2 style="margin-bottom:4px">🤖 AI understanding ${SET.aiEnabled&&SET.anthropicKeySet?'<span class="badge b-green" style="margin-left:6px">On</span>':'<span class="badge b-grey" style="margin-left:6px">Off</span>'}</h2>
-    <p class="hint" style="margin-bottom:10px">Connect Claude so the bot truly understands replies — other languages (Hindi/Hinglish), "actually my CTC is 15", "who is this?", "stop messaging me", "call me later", negotiation, and more. Without it, the bot uses fast keyword rules. Polls, CTC checks, and calendar all keep working either way.</p>
+    <p class="hint" style="margin-bottom:10px"><b>Rules first, AI only when needed.</b> Normal answers are handled free by keyword rules. Claude is called <i>only</i> when the rules can't understand a message — another language (Hindi/Hinglish), "actually my CTC is 15", "who is this?", "stop messaging me", negotiation, etc. So you pay just a fraction of a cent for the occasional tricky message. Polls, CTC checks, and calendar always keep working.</p>
     <details style="margin-bottom:10px"><summary style="cursor:pointer;color:var(--brand2);font-size:13px">▸ How to get an Anthropic API key</summary>
       <ol class="hint" style="line-height:1.7;padding-left:18px;margin:8px 0">
         <li>Go to <a href="https://console.anthropic.com/settings/keys" target="_blank" style="color:var(--brand2)">console.anthropic.com</a> → sign in → <b>API Keys</b> → <b>Create Key</b>.</li>

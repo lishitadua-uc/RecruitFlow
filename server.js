@@ -284,9 +284,9 @@ function sideQuestion(c, ch, text, out, jump) {
   return false;
 }
 
-function handleIncoming(c, ch, text) {
+function handleIncoming(c, ch, text, skipPush) {
   const j = jobOf(c), out = [];
-  ch.transcript.push({ from: 'candidate', text, ts: now() });
+  if (!skipPush) ch.transcript.push({ from: 'candidate', text, ts: now() });   // AI path logs the original message itself
   ch.nudgeCount = 0;   // they replied — reset the 1-day follow-up counter
 
   if (ch.pending === 'last_working_day') {
@@ -529,6 +529,30 @@ async function aiDecide(c, ch, text) {
   } catch (e) { log('AI error: ' + e.message); return null; }
 }
 const FIELD_TO_STAGE = { interest: 'outreach', currentLocation: 'location', preferredLocation: 'preflocation', workpref: 'workpref', experience: 'experience', currentctc: 'currentctc', expectedctc: 'expectedctc', notice: 'notice', resume: 'resume', availability: 'avail' };
+// RULES FIRST: can the cheap keyword engine handle this message at the current stage?
+// If yes → use the free rules. If no → fall back to the (paid) AI interpreter.
+function rulesUnderstand(c, ch, text) {
+  const t = text || '';
+  // Opt-out / "stop messaging" anywhere → let the AI handle it properly (mark do-not-contact).
+  if (/\b(stop|unsubscribe|do ?n['o]?t (message|contact|text)|remove me|leave me alone|do not contact|not interested ever)\b/i.test(t)) return false;
+  const s = ch.stage;
+  if (ch.pending === 'last_working_day') return parseDateToDays(t) !== null;
+  if (s === 'new' || isTerminal(s)) return true;   // ack / relevance filter already handle these (no AI needed)
+  const q = questionLike(t);
+  switch (s) {
+    case 'outreach': return detectInterest(t) !== null || q;
+    case 'location': case 'preflocation': return true;       // any text is taken as the city
+    case 'workpref': return detectComfort(t) !== null || q;
+    case 'experience': return detectExperience(t) !== null || q;
+    case 'currentctc': case 'expectedctc': return (q && !/\d/.test(t)) ? true : (parseAmount(t) ? true : false);
+    case 'notice': return /\bserv(e|ing)?\b|on notice|notice running|notice going on/i.test(t) || detectNoticeDays(t) !== null || q;
+    case 'skills': return true;                              // any text recorded as the answer
+    case 'resume': return true;                              // any text / "skip" recorded
+    case 'avail': case 'availdate': return parseDateLoose(t) !== null || q;
+    case 'availtime': return matchTimeSlot(t) !== null;
+    default: return true;
+  }
+}
 // AI-driven processing. Returns reply strings (engine prompts + AI replies). Falls back to rule engine.
 async function aiProcess(c, ch, text) {
   const d = await aiDecide(c, ch, text);
@@ -541,7 +565,8 @@ async function aiProcess(c, ch, text) {
   switch (d.intent) {
     case 'answer': {
       // Hand the canonical value to the rule engine so polls / dropouts / CTC checks / calendar all still run.
-      return handleIncoming(c, ch, d.value || text);
+      // skipPush=true: we already logged the candidate's original message above.
+      return handleIncoming(c, ch, d.value || text, true);
     }
     case 'change_answer': {
       if (d.field && d.field !== 'none' && d.value) { ch.answers[d.field === 'availability' ? 'availability' : d.field] = d.value; }
@@ -966,7 +991,8 @@ async function pollEmail() {
         if (c.em.stage === 'details_form') {
           replies = await handleEmailFormReply(c, parsed);   // batch-parse the form reply
         } else {
-          replies = aiReady() ? await aiProcess(c, c.em, body) : handleIncoming(c, c.em, body);
+          const useAI = aiReady() && !rulesUnderstand(c, c.em, body);
+          replies = useAI ? await aiProcess(c, c.em, body) : handleIncoming(c, c.em, body);
         }
         for (const r of replies) await sendEmail(c.email, emailSubject(c), stripMd(r));
         if (replies && replies.length) log(`📧 ▶ Replied to ${c.name} → [${STAGE_LABEL[c.em.stage] || c.em.stage}]`);
@@ -1088,7 +1114,8 @@ async function catchUpWhatsApp() {
         if (!m.body) continue;
         log(`⏳ Catch-up — ${c.name}: ${m.body.slice(0, 40)}`);
         if (c.dnc) { c.wa.lastProcessedTs = m.timestamp * 1000; continue; }
-        const replies = aiReady() ? await aiProcess(c, c.wa, m.body) : handleIncoming(c, c.wa, m.body);
+        const useAI = aiReady() && !rulesUnderstand(c, c.wa, m.body);
+        const replies = useAI ? await aiProcess(c, c.wa, m.body) : handleIncoming(c, c.wa, m.body);
         await sendRepliesWA(c, replies);
         c.wa.lastProcessedTs = m.timestamp * 1000;
       }
@@ -1119,7 +1146,8 @@ client.on('message', async msg => {
     save();
     log(`◀ ${c.name} [match:${how}] +${num}: ${msg.body.slice(0, 60)}`);
     c.wa.activePoll = null;   // they replied with text; any open poll is superseded
-    const replies = aiReady() ? await aiProcess(c, c.wa, msg.body) : handleIncoming(c, c.wa, msg.body);
+    const useAI = aiReady() && !rulesUnderstand(c, c.wa, msg.body);   // rules first; AI only when rules can't parse
+    const replies = useAI ? await aiProcess(c, c.wa, msg.body) : handleIncoming(c, c.wa, msg.body);
     await sendRepliesWA(c, replies);
     if (replies && replies.length) log(`▶ Replied to ${c.name} → now [${STAGE_LABEL[c.wa.stage] || c.wa.stage}]`);
     else log(`🤐 ${c.name}: message not relevant to recruitment — no reply sent.`);
