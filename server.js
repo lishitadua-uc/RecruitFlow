@@ -68,10 +68,10 @@ const questionLike = t => /\?/.test(t) || TEMPLATES.some(tpl => tpl.keys.some(k 
 const NO_WORD = /\bno\b(?!\s*(problem|issue|issues|worr|doubt|probs|biggie|prob\b))|\bnope\b|\bnah\b/;
 function detectInterest(t) {
   t = ' ' + t.toLowerCase() + ' ';
-  // No / not interested (English + Hindi/Hinglish)
-  if (/(not interested|no thanks|no thank|not right now|not looking|not keen|already (have|placed|employed|working)|happy where|i'?ll pass|decline|nahin?\b|\bnai\b|mat karo|interested nahi|nahi chahiye)/.test(t) || NO_WORD.test(t)) return 'no';
-  // Yes / interested (English + Hindi/Hinglish)
-  if (/(\byes\b|yeah|yep|yup|\bsure\b|interested|keen|definitely|absolutely|\bok\b|okay|sounds good|why not|i'?m in|go ahead|tell me more|more details|more info|love to|happy to|let'?s|please|\bhaan\b|\bhan\b|\bhaa\b|\bha\b|\bji\b|ji haan|bilkul|theek hai|thik hai|han ji|haanji|batao|batayein|zaroor|jarur)/.test(t)) return 'yes';
+  // No / not interested (English + Hindi/Hinglish) — including "not a fit"
+  if (/(not interested|no thanks|no thank|not right now|not looking|not keen|already (have|placed|employed|working)|happy where|i'?ll pass|decline|not a (good )?fit|not the right fit|don'?t (think|feel)[^.]{0,15}fit|isn'?t a fit|nahin?\b|\bnai\b|mat karo|interested nahi|nahi chahiye)/.test(t) || NO_WORD.test(t)) return 'no';
+  // Yes / interested (English + Hindi/Hinglish) — including implicit interest like "I'd be a good fit"
+  if (/(\byes\b|yeah|yep|yup|\bsure\b|interested|keen|definitely|absolutely|\bok\b|okay|sounds good|why not|i'?m in|go ahead|tell me more|more details|more info|love to|happy to|let'?s|please|good fit|right fit|perfect fit|great fit|will be (a )?(good |great )?fit|i'?ll be fit|be a (good |great )?fit|i'?d be (a )?(good |great )?fit|suits? me|i can do (this|it|the)|i'?m a (good )?(fit|match)|good match|right for me|made for (this|me)|fit for (the|this|group|category|senior|that)|\bhaan\b|\bhan\b|\bhaa\b|\bha\b|\bji\b|ji haan|bilkul|theek hai|thik hai|han ji|haanji|batao|batayein|zaroor|jarur)/.test(t)) return 'yes';
   if (/(maybe|perhaps|depends|not sure|possibly|might|could be|shayad|pata nahi|dekhta hu|dekhte hai)/.test(t)) return 'maybe';
   if (/^\s*(1|a)\b/.test(t)) return 'yes';
   if (/^\s*(2|b)\b/.test(t)) return 'no';
