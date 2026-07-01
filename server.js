@@ -52,15 +52,29 @@ function classifyRoleType(title) {
 }
 db.jobs.forEach(j => { j.roleType = classifyRoleType(j.title); });   // backfill existing jobs
 
-/* ---------------- Predefined template Q&A ---------------- */
+/* ---------------- Predefined template Q&A ----------------
+   flag:true  → recruiter should see it (added to Flagged tab)
+   isFallback → the "share your availability" catch-all (jumps to scheduling mid-flow) */
 const TEMPLATES = [
-  { keys: ['ctc', 'salary', 'pay', 'compensation', 'package', 'lpa', 'stipend', 'hike'], resp: () => "As per company policy, we don't disclose CTC at this stage. However, our recruiter will discuss a compensation package based on your experience during your call. Shall we proceed?" },
+  { keys: ['ctc', 'salary', 'pay', 'compensation', 'package', 'lpa', 'stipend', 'hike', 'budget'], resp: () => "As per company policy, we don't disclose CTC at this stage. However, our recruiter will discuss a compensation package based on your experience during your call. Shall we proceed?" },
   { keys: ['growth', 'career', 'learning', 'upskill', 'progression', 'promot'], resp: () => "Great question! Our recruiter will walk you through career progression and upskilling opportunities during your call. Looking forward to it!" },
   { keys: ['remote', 'work from home', 'wfh', 'hybrid'], resp: (j) => `This role requires ${j.workingDays} days from office in ${j.location}. Our recruiter can discuss flexibility during your call.` },
   { keys: ['benefit', 'perk', 'insurance', 'leave', 'holiday'], resp: () => "Our recruiter will give you a full overview of benefits and perks during your call. Let's get you scheduled!" },
+  // Process / role questions — answered warmly and flagged so the recruiter can address them on the call.
+  { keys: ['how many round', 'interview round', 'rounds of interview', 'interview process', 'selection process', 'hiring process', 'how many interview'], resp: () => "Good question! 🙂 Our recruiter will take you through the full interview process on the call.", flag: true },
+  { keys: ['hear back', 'get back to me', 'when will i know', 'response time', 'how long will', 'timeline', 'next steps', 'what happens next', 'when will i hear'], resp: () => "Our recruiter will share the timeline and next steps during your call. 🙂", flag: true },
+  { keys: ['report to', 'reporting to', 'manager', 'who will i work', 'reporting structure', 'who do i report'], resp: () => "Great question — your reporting structure will be covered by the recruiter on the call.", flag: true },
+  { keys: ['team size', 'how big is the team', 'team structure', 'how many people'], resp: () => "The recruiter can share team details on your call. 🙂", flag: true },
+  { keys: ['new role', 'new position', 'replacement', 'backfill', 'why is this open'], resp: () => "The recruiter will explain the context of the role on the call.", flag: true },
+  { keys: ['what does the role', 'role involve', 'responsibilities', 'day to day', 'what will i do', 'job description', 'more about the role', 'about this role'], resp: (j) => `The full job description is attached above 📄 — and the recruiter can go deeper on the day-to-day during your call.`, flag: true },
+  { keys: ['who are you', 'which company', 'about the company', 'what is urban company', 'about urban company'], resp: () => `We're Urban Company — a leading home-services platform. 😊 Happy to tell you more; the recruiter can share specifics on the call.` },
 ];
 const FALLBACK = "That's a great question! Our recruiter is best placed to answer this in detail. Let's get you connected. Please share your availability — your preferred day and time for a call.";
-function matchTemplate(text, j) { const t = text.toLowerCase(); for (const tpl of TEMPLATES) if (tpl.keys.some(k => t.includes(k))) return { resp: tpl.resp(j), flagged: false }; return { resp: FALLBACK, flagged: true }; }
+function matchTemplate(text, j) {
+  const t = text.toLowerCase();
+  for (const tpl of TEMPLATES) if (tpl.keys.some(k => t.includes(k))) return { resp: tpl.resp(j), flag: !!tpl.flag, isFallback: false };
+  return { resp: FALLBACK, flag: true, isFallback: true };
+}
 const questionLike = t => /\?/.test(t) || TEMPLATES.some(tpl => tpl.keys.some(k => t.toLowerCase().includes(k)));
 
 /* ---------------- Natural-language understanding ---------------- */
@@ -164,6 +178,12 @@ function detectWrongNumber(t) { return /\b(wrong (number|person)|you have the wr
 function detectHandoff(t) { return /\b((talk|speak|connect|call|chat) (to|with|me to|me with)?\s*(a |an )?(human|person|recruiter|someone|agent|representative)|real (person|human|recruiter)|actual (person|human|recruiter)|human (please|agent)|baat kara|kisi se baat)\b/i.test(t || ''); }
 function detectScamDoubt(t) { return /\b(who (is this|are you|'?s this)|kaun (ho|hai)|is this (real|legit|genuine|a scam|spam|fake|fraud)|is it (real|legit|genuine)|are you (real|a bot|genuine)|scam|spam|fraud|legit\??|fake|real (job|opportunity|company)\??)\b/i.test(t || ''); }
 function detectBusy(t) { return /\b((call|text|message|contact|reach|ping|connect) me (later|tomorrow|after|in a|next)|busy (right now|at the moment|currently|today)|i'?m busy|i am busy|talk later|reach out later|some other time|another time|abhi (busy|nahi)|thoda busy|baad (me|mein)|kal baat|busy hu)\b/i.test(t || ''); }
+// Pure greeting with no other content ("hi", "hello there", "good morning") → greet + re-ask.
+function detectGreeting(t) { return /^[\s!.,]*(hi+|hey+|hello+|heya|hii+|helo|yo|namaste|namaskar|good\s*(morning|afternoon|evening|day)|gm|gud\s*(mrng|morning)|greetings)([\s!.,👋🙏😊]+(there|team|sir|maam|ma'?am|mam|everyone|all|folks|dear))*[\s!.,👋🙏😊]*$/i.test((t || '').trim()); }
+// Candidate is flexible about scheduling — pick/confirm a slot instead of re-asking.
+function isFlexibleSchedule(t) { return /\b(any ?time|anytime|any ?day|any slot|whenever|you (decide|choose|pick|tell)|up to you|as per you(r)?|your convenience|free all day|free the whole day|free anytime|no preference|whatever works|whichever|either works|both work|as you like|jab bhi|kabhi bhi|aap batao)\b/i.test(t || ''); }
+// A "location" answer that isn't actually a city (flexibility statements).
+function isVagueLocation(t) { return /(any ?where|open to (relocat|any|work)|willing to relocat|can relocat|relocat|remote|flexible|any location|any city|wherever|no preference|open for any|doesn'?t matter|does not matter|koi bhi)/i.test(t || ''); }
 
 // Is this message actually about the role / hiring process (vs. casual chit-chat)?
 // Used after a candidate is finished (scheduled/declined) so we don't reply to random messages.
@@ -234,7 +254,30 @@ function matchTimeSlot(text) {
   return null;
 }
 // Extract a positive number from a CTC answer; returns null if none. Used to make CTC mandatory (and reject 0).
-function parseAmount(text) { const m = (text || '').match(/\d+(?:\.\d+)?/); return m ? parseFloat(m[0]) : null; }
+const WORD_NUMS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, twentyfive: 25, thirty: 30, thirtyfive: 35, forty: 40, fifty: 50 };
+function parseAmount(text) {
+  if (!text) return null;
+  const m = text.match(/\d+(?:\.\d+)?/);
+  if (m) return parseFloat(m[0]);
+  const tl = text.toLowerCase();
+  for (const [w, n] of Object.entries(WORD_NUMS)) if (new RegExp('\\b' + w + '\\b').test(tl)) return n;   // "twelve lakhs" → 12
+  return null;
+}
+// Tidy a CTC answer for the recruiter; converts a monthly figure to an approx annual LPA.
+function normalizeCTC(text) {
+  const t = (text || '').trim(), tl = t.toLowerCase();
+  const monthly = /month|monthly|\/mo\b|\bp\.?m\.?\b|per month|permonth/.test(tl);
+  if (monthly) {
+    const m = tl.match(/(\d+(?:\.\d+)?)\s*(k|thousand|lakh|lac|l\b)?/);
+    if (m) {
+      let val = parseFloat(m[1]); const unit = m[2] || '';
+      if (/k|thousand/.test(unit)) val *= 1000; else if (/lakh|lac|l/.test(unit)) val *= 100000; else if (val < 1000) val *= 100000; // bare small number assumed lakhs? keep raw if unclear
+      const annualLpa = (val * 12) / 100000;
+      if (annualLpa > 0 && annualLpa < 1000) return `${t} (≈ ${annualLpa.toFixed(1)} LPA annual)`;
+    }
+  }
+  return t;
+}
 // Parse a loose date string to a future Date (for "last working day").
 function parseDateLoose(t) {
   t = (t || '').toLowerCase(); const now = new Date();
@@ -319,12 +362,13 @@ function confirmSchedule(c, ch, out) {
   const link = ch.answers.candidateCalendarLink;
   out.push(`Perfect! ✅ I've noted your availability: *${ch.answers.availability}*. Our recruiter will reach out to confirm the call. Please keep your phone handy — looking forward to connecting you! 📞` + (link ? `\n\n📅 Add this call to your calendar: ${link}` : ''));
 }
-function askQuestion(c, ch, text, out) { const m = matchTemplate(text, jobOf(c)); out.push(m.resp); if (m.flagged) ch.flags.push({ q: text, ts: now(), resolved: false }); return m.flagged; }
-// Side-question mid-flow. If unknown and `jump` allowed, answer with fallback and route to scheduling.
+function askQuestion(c, ch, text, out) { const m = matchTemplate(text, jobOf(c)); out.push(m.resp); if (m.flag) ch.flags.push({ q: text, ts: now(), resolved: false }); return m.flag; }
+// Side-question mid-flow. Only the true catch-all (isFallback) jumps to scheduling; known templates just answer + re-ask.
 function sideQuestion(c, ch, text, out, jump) {
   const m = matchTemplate(text, jobOf(c));
   out.push(m.resp);
-  if (m.flagged) { ch.flags.push({ q: text, ts: now(), resolved: false }); if (jump) { ch.stage = 'avail'; return true; } }
+  if (m.flag) ch.flags.push({ q: text, ts: now(), resolved: false });
+  if (m.isFallback && jump) { ch.stage = 'avail'; return true; }
   return false;
 }
 
@@ -357,6 +401,12 @@ function handleIncoming(c, ch, text, skipPush) {
     if (detectBusy(text) && !isTerminal(ch.stage)) {
       ch.nudgeCount = 0;   // we'll follow up later
       return finish(ch, ["No problem at all — take your time. 😊 I'll check back later. Just reply here whenever you're free."]);
+    }
+    // Pure greeting → greet warmly and re-show the current question (don't error out).
+    if (detectGreeting(text) && ch.stage !== 'new' && !isTerminal(ch.stage)) {
+      const out2 = [`Hello! 😊`];
+      const p = stagePrompt(ch.stage, c, j); if (p) out2.push(p);
+      return finish(ch, out2);
     }
   }
 
@@ -430,13 +480,17 @@ function handleIncoming(c, ch, text, skipPush) {
       break;
     }
     case 'location': {
-      if (questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('location', c, j)); }
-      else { ch.answers.currentLocation = text.trim(); advance(c, ch, 'preflocation', out); }
+      if (questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('location', c, j)); break; }
+      // "anywhere / open to relocate / remote" isn't a current city — ask once for the actual city.
+      if (isVagueLocation(text) && !ch.askedCity) { ch.askedCity = true; out.push("Got it! 🙂 And just so we have it right — which city are you *based in right now*?"); break; }
+      ch.answers.currentLocation = text.trim(); advance(c, ch, 'preflocation', out);
       break;
     }
     case 'preflocation': {
-      if (questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('preflocation', c, j)); }
-      else { ch.answers.preferredLocation = text.trim(); advance(c, ch, 'workpref', out); }
+      if (questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('preflocation', c, j)); break; }
+      // For preferred location, flexibility is a perfectly valid answer.
+      ch.answers.preferredLocation = isVagueLocation(text) ? 'Open to any location / relocation' : text.trim();
+      advance(c, ch, 'workpref', out);
       break;
     }
     case 'workpref': {
@@ -453,17 +507,21 @@ function handleIncoming(c, ch, text, skipPush) {
       break;
     }
     case 'currentctc': {
-      if (!/\d/.test(text) && questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('currentctc', c, j)); break; }
+      if (!/\d/.test(text) && !parseAmount(text) && questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('currentctc', c, j)); break; }
       const amt = parseAmount(text);
       if (amt === null || amt === 0) { out.push(`To proceed, please share your *current CTC* as a number greater than 0 — e.g. "12" or "12 LPA". This field is required. 🙏`); break; }
-      ch.answers.currentCTC = text.trim(); advance(c, ch, 'expectedctc', out);
+      ch.answers.currentCTC = normalizeCTC(text);
+      // Combined answer: "current 12, expecting 15" → also capture expected and skip ahead.
+      const expM = text.match(/(?:expect(?:ing|ed)?|hoping|looking for|want)\s*[:\-]?\s*(?:around|approx|about)?\s*(\d+(?:\.\d+)?)\s*(lpa|lakh|lac|k)?/i);
+      if (expM && parseFloat(expM[1]) > 0) { ch.answers.expectedCTC = expM[1] + (expM[2] ? ' ' + expM[2] : ' LPA'); advance(c, ch, 'notice', out); break; }
+      advance(c, ch, 'expectedctc', out);
       break;
     }
     case 'expectedctc': {
-      if (!/\d/.test(text) && questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('expectedctc', c, j)); break; }
+      if (!/\d/.test(text) && !parseAmount(text) && questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('expectedctc', c, j)); break; }
       const amt = parseAmount(text);
       if (amt === null || amt === 0) { out.push(`To proceed, please share your *expected CTC* as a number greater than 0 — e.g. "15" or "15 LPA". This field is required. 🙏`); break; }
-      ch.answers.expectedCTC = text.trim(); advance(c, ch, 'notice', out);
+      ch.answers.expectedCTC = normalizeCTC(text); advance(c, ch, 'notice', out);
       break;
     }
     case 'notice': {
@@ -500,8 +558,10 @@ function handleIncoming(c, ch, text, skipPush) {
     }
     case 'avail':         // legacy stage → treat as date selection
     case 'availdate': {
-      if (questionLike(text) && !parseDateLoose(text)) { askQuestion(c, ch, text, out); out.push(stagePrompt('availdate', c, j)); break; }
-      const d = parseDateLoose(text);
+      if (questionLike(text) && !parseDateLoose(text) && !isFlexibleSchedule(text)) { askQuestion(c, ch, text, out); out.push(stagePrompt('availdate', c, j)); break; }
+      // "anytime / you decide / flexible" → pick the earliest offered date and move to time.
+      let d = parseDateLoose(text);
+      if (!d && isFlexibleSchedule(text)) { d = availDateOptions()[0].date; }
       if (!d) { out.push(`Please pick a *date* for the call. ${availDateOptions().map(o => '• ' + o.label).join('  ')}`); break; }
       ch.answers._dateISO = d.toISOString();
       ch.answers._dateLabel = fmtDateOpt(d);
@@ -516,7 +576,8 @@ function handleIncoming(c, ch, text, skipPush) {
       break;
     }
     case 'availtime': {
-      const slot = matchTimeSlot(text);
+      // "anytime / you decide / flexible" → default to a mid-afternoon slot so scheduling doesn't stall.
+      const slot = matchTimeSlot(text) || (isFlexibleSchedule(text) ? (TIME_SLOTS.find(s => s.start === 15) || TIME_SLOTS[0]) : null);
       if (!slot) { out.push(`Please pick a *time slot*: ${TIME_SLOTS.map(s => s.label).join('  •  ')}`); break; }
       const start = new Date(ch.answers._dateISO || Date.now()); start.setHours(slot.start, 0, 0, 0);
       ch.answers.scheduledStartISO = start.toISOString();
@@ -635,6 +696,7 @@ function rulesUnderstand(c, ch, text) {
   if (/\b(stop|unsubscribe|do ?n['o]?t (message|contact|text)|remove me|leave me alone|do not contact|not interested ever)\b/i.test(t)) return false;
   const s = ch.stage;
   if (ch.pending === 'last_working_day') return parseDateToDays(t) !== null;
+  if (detectGreeting(t)) return true;   // pure greetings handled free
   if (s === 'new' || isTerminal(s)) return true;   // ack / relevance filter already handle these (no AI needed)
   const q = questionLike(t);
   switch (s) {
@@ -642,14 +704,14 @@ function rulesUnderstand(c, ch, text) {
     case 'location': case 'preflocation': return true;       // any text is taken as the city
     case 'workpref': return detectComfort(t) !== null || q;
     case 'experience': return detectExperience(t) !== null || q;
-    case 'currentctc': case 'expectedctc': return (q && !/\d/.test(t)) ? true : (parseAmount(t) ? true : false);
+    case 'currentctc': case 'expectedctc': return (q && !/\d/.test(t) && !parseAmount(t)) ? true : (parseAmount(t) ? true : false);
     case 'notice': return /\bserv(e|ing)?\b|on notice|notice running|notice going on/i.test(t) || detectNoticeDays(t) !== null || q;
     case 'skills': return true;                              // any text recorded as the answer
     case 'resume': return true;                              // any text / "skip" recorded
     case 'reason': return true;                              // any reason text is mapped to a category
     case 'resurface': return parseResurfaceMonths(t) !== null || q;
-    case 'avail': case 'availdate': return parseDateLoose(t) !== null || q;
-    case 'availtime': return matchTimeSlot(t) !== null;
+    case 'avail': case 'availdate': return parseDateLoose(t) !== null || isFlexibleSchedule(t) || q;
+    case 'availtime': return matchTimeSlot(t) !== null || isFlexibleSchedule(t);
     default: return true;
   }
 }
