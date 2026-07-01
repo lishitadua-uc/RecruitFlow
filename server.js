@@ -1130,7 +1130,20 @@ async function checkNudges() {
 if (!process.env.RF_TEST) { setInterval(() => checkNudges().catch(() => {}), 60 * 60 * 1000); setTimeout(() => checkNudges().catch(() => {}), 60000); }
 
 let emailPolling = false;
+// Automated / calendar / no-reply emails that must NEVER be treated as a candidate reply.
+function isAutomatedEmail(parsed, fromAddr) {
+  const from = (fromAddr || '').toLowerCase();
+  const subj = (parsed.subject || '').toLowerCase();
+  const body = (parsed.text || '').toLowerCase();
+  if (/no-?reply|do-?not-?reply|notification|calendar-|mailer-daemon|postmaster|automated|googlemail|calendar@|invitations?@|notify@/.test(from)) return true;
+  if (/\b(invitation|calendar|has been updated|accepted:|declined:|tentative:|event (updated|invitation|reminder)|google calendar|has invited you|is inviting you|@ \w+ \(|reminder:)\b/.test(subj)) return true;
+  // Calendar-notification bodies (day, date, time-range, timezone) that aren't a real reply.
+  if (/(mon|tue|wed|thu|fri|sat|sun)\w*\s+\w+\s+\d{1,2},?\s*\d{4}.*(am|pm).*(–|-|to).*(am|pm)/i.test(body) && /(standard time|gmt|utc|calendar|forwarded message|this event)/i.test(body)) return true;
+  if (/this event has been (updated|cancelled|changed)|has been (updated|cancelled)|changed:\s*(time|date|location)/i.test(body)) return true;
+  return false;
+}
 async function pollEmail() {
+  if (!db.settings.emailFollowups) return;   // email channel paused (WhatsApp only) — don't read email replies either
   if (!mailerReady() || emailPolling) return;
   if (!db.candidates.some(c => c.em && c.em.stage !== 'new' && !isTerminal(c.em.stage))) return;
   emailPolling = true;
@@ -1148,6 +1161,7 @@ async function pollEmail() {
         const c = db.candidates.find(x => x.em.stage !== 'new' && (x.email || '').toLowerCase() === from);
         await imap.messageFlagsAdd(uid, ['\\Seen'], { uid: true });
         if (!c) continue;
+        if (isAutomatedEmail(parsed, from)) { log(`📧 Ignored automated/calendar email for ${c.name}.`); continue; }   // never schedule off a calendar notification
         const body = topReply(parsed.text || '');
         if (!body) continue;
         log(`📧 ◀ ${c.name}: ${body.slice(0, 50)}`);
