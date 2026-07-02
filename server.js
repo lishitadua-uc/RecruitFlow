@@ -1213,6 +1213,9 @@ client.on('authenticated', () => { waStatus = 'authenticated'; });
 client.on('auth_failure', m => { clearWatchdog(); waStatus = 'auth_failure'; log('Auth failure: ' + m); });
 client.on('ready', () => { clearWatchdog(); waStatus = 'ready'; qrDataUrl = null; waInfo = client.info ? client.info.wid.user : null; log('WhatsApp READY. Connected as +' + (waInfo || '?')); setTimeout(() => catchUpWhatsApp(), 4000); });
 client.on('disconnected', r => { waStatus = 'disconnected'; log('Disconnected: ' + r + ' — attempting to reconnect.'); recoverWhatsApp(); });
+// Safety net: sweep for any missed messages every 2 minutes, independent of reconnect events —
+// closes the gap for brief hiccups that don't trigger a full disconnect/reconnect cycle.
+if (!process.env.RF_TEST) setInterval(() => { if (waStatus === 'ready') catchUpWhatsApp().catch(() => {}); }, 2 * 60 * 1000);
 
 /* --- Self-healing: guarantee a clean Chrome on every start, auto-recover if the client hangs --- */
 const { execSync } = require('child_process');
@@ -1341,8 +1344,12 @@ client.on('message', async msg => {
 
     // STRICT matching: only reply to a candidate we actually sent outreach to (by their real number,
     // or a chat already pinned to them). Anyone else messaging this number is ignored — no auto-reply.
+    // If the same phone number matches multiple candidates (e.g. re-added for a second job), prefer
+    // the ACTIVE one over a closed/terminal one — otherwise a live conversation's replies get silently
+    // swallowed by an old finished conversation's "not relevant" filter.
     let how = 'number';
-    let c = db.candidates.find(x => x.wa.stage !== 'new' && last10(x.phone) === num.slice(-10));
+    let c = db.candidates.find(x => x.wa.stage !== 'new' && !isTerminal(x.wa.stage) && last10(x.phone) === num.slice(-10));
+    if (!c) c = db.candidates.find(x => x.wa.stage !== 'new' && last10(x.phone) === num.slice(-10));
     if (!c) { c = db.candidates.find(x => x.wa.stage !== 'new' && x.wa.chatId === msg.from); how = 'pinned-chat'; }
     if (!c) { log(`◀ Incoming from +${num} — not a contacted candidate, ignored (no auto-reply).`); return; }
     if (c.dnc) { log(`◀ ${c.name} opted out (do-not-contact) — ignored.`); return; }
@@ -1373,7 +1380,8 @@ client.on('vote_update', async (vote) => {
     // Primary match: the exact poll message we sent. Fallbacks: pinned chat, then number.
     let c = pmId ? db.candidates.find(x => x.wa.activePollMsgId && x.wa.activePollMsgId === pmId) : null;
     if (!c && chatId) c = db.candidates.find(x => x.wa.stage !== 'new' && x.wa.chatId === chatId);
-    if (!c && voterNum) c = db.candidates.find(x => x.wa.stage !== 'new' && last10(x.phone) === voterNum.slice(-10));
+    if (!c && voterNum) c = db.candidates.find(x => x.wa.stage !== 'new' && !isTerminal(x.wa.stage) && last10(x.phone) === voterNum.slice(-10))
+      || db.candidates.find(x => x.wa.stage !== 'new' && last10(x.phone) === voterNum.slice(-10));
     if (!c) { log(`🗳️ Poll vote unmatched — ignored.`); return; }
     if (!c.wa.activePoll) { log(`🗳️ ${c.name}: no active poll, ignoring stale vote.`); return; }
     const answer = voteToAnswer(c.wa.activePoll, sel[0].name);
