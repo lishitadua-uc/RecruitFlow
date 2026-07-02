@@ -145,7 +145,14 @@ async function resurfaceAction(id,action){
   const r=await api('POST','/api/candidates/'+id+'/resurface',{action});
   if(r.error) return toast('⚠️ '+r.error);
   await reload();
-  toast(action==='rerun'?'Ready to re-run outreach — open the job and click ▶ WhatsApp for this candidate.':'Dismissed.');
+  toast(action==='rerun'?'🔁 Re-engaged now on WhatsApp.':'Dismissed.');
+}
+async function retriggerCand(id){
+  if(STATUS.waStatus!=='ready') return openConnect();
+  const r=await api('POST','/api/candidates/'+id+'/retrigger');
+  if(r.error) return toast('⚠️ '+r.error);
+  await reload();
+  toast('🔁 Re-sent — candidate is now at: '+((STAGE_META[r.stage]||[r.stage])[0]));
 }
 function render(){
   renderNav();
@@ -199,7 +206,10 @@ function candTable(list){return `<div class="tablewrap" style="margin-top:10px">
   <tbody>${list.map(c=>{const f=c.wa.flags.filter(x=>!x.resolved).length+((c.em&&c.em.flags)?c.em.flags.filter(x=>!x.resolved).length:0);return `<tr><td><b>${esc(c.name)}</b>${c.dnc?` <span class="badge b-red" title="Opted out — won't be contacted" onclick="if(confirm('Re-enable contact for ${esc(c.name)}?'))unDnc('${c.id}')" style="cursor:pointer">🚫 opted out</span>`:''}<br><span style="color:var(--muted)">${esc(c.email||'')}</span></td>
     <td>${esc(c.phone)}</td><td>${esc(c.targetLocation||'—')}</td><td>${badge(c.wa.stage)}</td><td>${badge((c.em||{}).stage||'new')}</td><td>${f?`<span style="color:var(--amber)">⚑ ${f}</span>`:'—'}</td>
     <td><div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">
-      ${c.wa.stage==='new'?`<button class="btn sm" style="background:#25D366;color:#053321" onclick="runOne('${c.id}')" title="Send WhatsApp outreach to ${esc(c.name)}">▶ WhatsApp</button>`:`<span class="hint" title="WhatsApp already sent">✓ WA sent</span>`}
+      ${c.wa.stage==='new'?`<button class="btn sm" style="background:#25D366;color:#053321" onclick="runOne('${c.id}')" title="Send WhatsApp outreach to ${esc(c.name)}">▶ WhatsApp</button>`
+        :c.wa.stage==='scheduled'?`<span class="hint" title="Already scheduled">✓ Scheduled</span>`
+        :c.dnc?`<span class="hint" title="Opted out">✓ WA sent</span>`
+        :`<button class="btn sec sm" onclick="retriggerCand('${c.id}')" title="Resend the current question / re-engage ${esc(c.name)} right now">🔁 Retrigger</button>`}
       ${(c.em&&c.em.stage==='new')?(c.email?`<button class="btn sm" style="background:var(--blue)" onclick="runEmailOne('${c.id}')" title="Send email outreach to ${esc(c.name)}">✉️ Email</button>`:`<span class="hint" title="No email on file">no email</span>`):`<span class="hint" title="Email already sent">✓ Email sent</span>`}
       <button class="btn sec sm" onclick="viewChat('${c.id}')">View chat</button>
       <button class="btn ghost sm" onclick="candForm('${c.jobId}','${c.id}')" title="Edit candidate details">✎ Edit</button>

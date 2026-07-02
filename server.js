@@ -94,6 +94,19 @@ function detectInterest(t) {
 }
 // ---- "Not interested" reason sub-flow ----
 const REASON_OPTS = ['Not job-hunting right now', "This role isn't the right fit", 'Looking for a more senior role', 'Not keen on Urban Company', 'Something else'];
+// City-poll options + "Other" escape hatch, and the resume yes/skip poll.
+const OTHER_CITY_LABEL = 'Other (type my city)';
+const RESUME_YES_LABEL = "Yes, I'll share the link";
+const RESUME_SKIP_LABEL = 'Skip for now';
+function locationPollOptions(j) {
+  const metros = ['Mumbai', 'Delhi NCR', 'Bangalore', 'Pune', 'Hyderabad', 'Chennai', 'Kolkata'];
+  let opts = [];
+  if (j && j.location && !metros.some(m => m.toLowerCase() === j.location.toLowerCase())) opts.push(j.location);
+  opts = [...new Set(opts.concat(metros))].slice(0, 6);
+  opts.push(OTHER_CITY_LABEL);
+  return opts;
+}
+function isOtherCityAnswer(t) { const tl = (t || '').trim().toLowerCase(); return tl === OTHER_CITY_LABEL.toLowerCase() || tl === 'other' || tl === 'others'; }
 const RESURFACE_OPTS = ['Check back in ~1 month', 'Check back in ~3 months', 'Check back in ~6 months', "Please don't reach out again"];
 function detectReason(t) {
   const tl = (t || '').toLowerCase();
@@ -378,7 +391,7 @@ function handleIncoming(c, ch, text, skipPush) {
   ch.nudgeCount = 0;   // they replied — reset the 1-day follow-up counter
 
   // ---- Smart intents that can arrive at ANY stage (handled by free keyword rules) ----
-  if (ch.pending !== 'last_working_day') {
+  if (!ch.pending) {
     if (detectOptOut(text)) {
       c.dnc = true; if (!isTerminal(ch.stage)) ch.stage = 'declined';
       return finish(ch, ["Understood — I won't message you again. Wishing you all the best! 🙏"]);
@@ -422,6 +435,9 @@ function handleIncoming(c, ch, text, skipPush) {
     } else { enterSkills(c, ch, out); }
     return finish(ch, out);
   }
+  if (ch.pending === 'location_city') { ch.pending = null; ch.answers.currentLocation = text.trim(); advance(c, ch, 'preflocation', out); return finish(ch, out); }
+  if (ch.pending === 'preflocation_city') { ch.pending = null; ch.answers.preferredLocation = text.trim(); advance(c, ch, 'workpref', out); return finish(ch, out); }
+  if (ch.pending === 'resume_link') { ch.pending = null; ch.answers.resume = detectSkip(text) ? 'Not shared' : text.trim(); advance(c, ch, 'availdate', out); return finish(ch, out); }
 
   if (ch.stage === 'new' || isTerminal(ch.stage)) {
     // Candidate is finished (scheduled / declined / dropped). Only respond to messages that are actually
@@ -481,6 +497,7 @@ function handleIncoming(c, ch, text, skipPush) {
     }
     case 'location': {
       if (questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('location', c, j)); break; }
+      if (isOtherCityAnswer(text)) { ch.pending = 'location_city'; out.push('Sure! 🙂 Please type the name of your current city.'); break; }
       // "anywhere / open to relocate / remote" isn't a current city — ask once for the actual city.
       if (isVagueLocation(text) && !ch.askedCity) { ch.askedCity = true; out.push("Got it! 🙂 And just so we have it right — which city are you *based in right now*?"); break; }
       ch.answers.currentLocation = text.trim(); advance(c, ch, 'preflocation', out);
@@ -488,6 +505,7 @@ function handleIncoming(c, ch, text, skipPush) {
     }
     case 'preflocation': {
       if (questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('preflocation', c, j)); break; }
+      if (isOtherCityAnswer(text)) { ch.pending = 'preflocation_city'; out.push('No problem! Please type your preferred city.'); break; }
       // For preferred location, flexibility is a perfectly valid answer.
       ch.answers.preferredLocation = isVagueLocation(text) ? 'Open to any location / relocation' : text.trim();
       advance(c, ch, 'workpref', out);
@@ -551,8 +569,10 @@ function handleIncoming(c, ch, text, skipPush) {
       break;
     }
     case 'resume': {
-      if (detectSkip(text)) { ch.answers.resume = 'Not shared'; }
-      else { ch.answers.resume = text.trim(); }
+      const tl = text.trim().toLowerCase();
+      if (detectSkip(text) || tl === RESUME_SKIP_LABEL.toLowerCase()) { ch.answers.resume = 'Not shared'; advance(c, ch, 'availdate', out); break; }
+      if (tl === RESUME_YES_LABEL.toLowerCase()) { ch.pending = 'resume_link'; out.push('Great! Please paste the link here. 🔗'); break; }
+      ch.answers.resume = text.trim();   // they pasted the link directly without tapping the poll
       advance(c, ch, 'availdate', out);
       break;
     }
@@ -696,6 +716,7 @@ function rulesUnderstand(c, ch, text) {
   if (/\b(stop|unsubscribe|do ?n['o]?t (message|contact|text)|remove me|leave me alone|do not contact|not interested ever)\b/i.test(t)) return false;
   const s = ch.stage;
   if (ch.pending === 'last_working_day') return parseDateToDays(t) !== null;
+  if (ch.pending === 'location_city' || ch.pending === 'preflocation_city' || ch.pending === 'resume_link') return true;
   if (detectGreeting(t)) return true;   // pure greetings handled free
   if (s === 'new' || isTerminal(s)) return true;   // ack / relevance filter already handle these (no AI needed)
   const q = questionLike(t);
@@ -1244,9 +1265,12 @@ async function resolveNumber(msg) {
 function pollForStage(stage, c, j) {
   switch (stage) {
     case 'outreach':   return { name: `Are you open to exploring this ${j ? j.title : ''} opportunity? 😊`, options: ['Yes, tell me more 👍', 'Not right now'] };
+    case 'location':   return { name: 'Which city are you currently based in? 📍', options: locationPollOptions(j) };
+    case 'preflocation': return { name: 'Which city would you prefer to work in? 📍', options: locationPollOptions(j) };
     case 'workpref':   return { name: `This role is in ${j ? j.location : ''} — ${j ? j.workingDays : ''} days/week from office${j && j.remote === 'No' ? ' (no remote option)' : ''}. Are you comfortable with this?`, options: ['Yes, I\'m comfortable', 'No, that won\'t work'] };
     case 'experience': return { name: 'How many years of work experience do you have?', options: ['0–2 years', '3–5 years', '5–8 years', '8+ years'] };
     case 'notice':     return { name: 'What is your notice period?', options: ['Immediate', '15 days', '30 days', '60 days', '90+ days', 'Currently serving notice'] };
+    case 'resume':     return { name: 'One last thing — do you have an updated resume to share? 📄', options: [RESUME_YES_LABEL, RESUME_SKIP_LABEL] };
     case 'reason':     return { name: 'No worries! 🙂 May I ask what\'s holding you back?', options: REASON_OPTS };
     case 'resurface':  return { name: 'Got it — not actively looking right now. When should we check back?', options: RESURFACE_OPTS };
     case 'avail':
@@ -1524,18 +1548,48 @@ app.patch('/api/candidates/:id', (req, res) => {
   save(); res.json(c);
 });
 // Act on a candidate whose "resurface later" date has arrived.
-app.post('/api/candidates/:id/resurface', (req, res) => {
+// Re-engage a candidate RIGHT NOW on WhatsApp — resumes the exact question they were left on,
+// or (if their conversation had ended) re-opens with a fresh interest check. One click, immediate send.
+async function retriggerCandidate(c) {
+  if (waStatus !== 'ready') throw new Error('WhatsApp is not connected yet.');
+  if (c.dnc) throw new Error('This candidate opted out — cannot message them.');
+  const ch = c.wa, j = jobOf(c);
+  if (ch.stage === 'new') throw new Error('Not contacted yet — use the ▶ WhatsApp button instead.');
+  if (ch.stage === 'scheduled') throw new Error('Already scheduled — nothing to retrigger.');
+  ch.activePoll = null; ch.activePollMsgId = null; ch.pending = null; ch.nudgeCount = 0;
+  let text;
+  if (isTerminal(ch.stage)) {
+    // Conversation had ended (declined / rejected) — re-open with a fresh interest check, keeping prior answers for context.
+    ch.stage = 'outreach';
+    text = `Hi ${c.name}! 👋 Just checking back in — are you open to exploring the *${j ? j.title : ''}* opportunity now? 😊`;
+  } else if (ch.stage === 'skills') {
+    const qs = (j && j.skillQuestions || []).filter(q => q && q.trim());
+    text = qs[ch.skillIdx || 0] || 'Could you share a bit more about your experience? 📝';
+  } else {
+    text = stagePrompt(ch.stage, c, j) || `Hi ${c.name}! 👋 Just following up — whenever you get a chance, I'd love to hear back from you. 😊`;
+  }
+  ch.transcript.push({ from: 'system', text, ts: now() });
+  await sendRepliesWA(c, [text]);
+  save();
+  return ch.stage;
+}
+app.post('/api/candidates/:id/retrigger', async (req, res) => {
+  try {
+    const c = db.candidates.find(x => x.id === req.params.id);
+    if (!c) throw new Error('Candidate not found.');
+    const stage = await retriggerCandidate(c);
+    res.json({ ok: true, stage });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post('/api/candidates/:id/resurface', async (req, res) => {
   const c = db.candidates.find(x => x.id === req.params.id);
   if (!c) return res.status(404).json({ error: 'Candidate not found.' });
   const action = req.body.action;
-  if (action === 'rerun') {
-    // Re-open WhatsApp outreach: reset to 'new' so the normal ▶ WhatsApp button can fire fresh outreach.
-    c.wa.stage = 'new'; c.wa.activePoll = null; c.wa.activePollMsgId = null; c.wa.pending = null;
-    delete c.wa.answers.resurfaceDate;
-  } else if (action === 'dismiss') {
-    delete c.wa.answers.resurfaceDate;   // stop nagging, keep them as declined
-  } else return res.status(400).json({ error: 'Unknown action.' });
-  save(); res.json({ ok: true, candidate: c });
+  try {
+    if (action === 'rerun') { const stage = await retriggerCandidate(c); return res.json({ ok: true, stage }); }
+    else if (action === 'dismiss') { delete c.wa.answers.resurfaceDate; save(); return res.json({ ok: true }); }
+    else return res.status(400).json({ error: 'Unknown action.' });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 app.post('/api/candidates/bulk', (req, res) => { const { jobId, rows } = req.body; let added = 0; (rows || []).forEach(r => { if (r.name) { db.candidates.push(mkCand(jobId, r)); added++; } }); save(); res.json({ added }); });
 app.delete('/api/candidates/:id', (req, res) => { db.candidates = db.candidates.filter(c => c.id !== req.params.id); save(); res.json({ ok: true }); });
