@@ -120,12 +120,40 @@ function renderNav(){
 function setTab(t){UI.tab=t;UI.jobId=null;render();}
 const CH=c=>UI.channel==='em'?(c.em||{stage:'new',answers:{},flags:[],transcript:[]}):c.wa;
 
+function dueForResurface(){
+  const today=new Date();
+  return DB.candidates.filter(c=>{
+    const a=(c.wa||{}).answers||{};
+    return a.resurfaceDate && c.wa.stage==='declined' && !c.dnc && new Date(a.resurfaceDate)<=today;
+  });
+}
+function renderResurfaceBanner(){
+  const due=dueForResurface();
+  if(!due.length) return '';
+  return `<div class="banner" style="background:#1f2a1a;border-color:#3a5a2a;color:#c8e6a0;margin-bottom:14px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+      <div><b>🔁 ${due.length} candidate${due.length>1?'s':''} due for a follow-up</b> — they asked to be checked back with around now.</div>
+    </div>
+    <div style="margin-top:8px;display:flex;flex-direction:column;gap:6px">
+      ${due.map(c=>{const j=job(c.jobId)||{};return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;background:rgba(255,255,255,.04);border-radius:8px;padding:6px 10px">
+        <span><b>${esc(c.name)}</b> <span class="hint">· ${esc(j.title||'')} · was due ${esc(new Date(c.wa.answers.resurfaceDate).toLocaleDateString('en-IN',{month:'short',year:'numeric'}))}</span></span>
+        <span style="display:flex;gap:6px"><button class="btn sm" onclick="resurfaceAction('${c.id}','rerun')">▶ Re-run outreach</button><button class="btn ghost sm" onclick="resurfaceAction('${c.id}','dismiss')">Dismiss</button></span>
+      </div>`;}).join('')}
+    </div></div>`;
+}
+async function resurfaceAction(id,action){
+  const r=await api('POST','/api/candidates/'+id+'/resurface',{action});
+  if(r.error) return toast('⚠️ '+r.error);
+  await reload();
+  toast(action==='rerun'?'Ready to re-run outreach — open the job and click ▶ WhatsApp for this candidate.':'Dismissed.');
+}
 function render(){
   renderNav();
   const v=document.getElementById('view');
-  if(UI.tab==='jobs') return UI.jobId?renderJobDetail(v):renderJobs(v);
-  if(UI.tab==='pipeline') return renderPipeline(v);
-  if(UI.tab==='responses') return renderResponses(v);
+  const banner=renderResurfaceBanner();
+  if(UI.tab==='jobs'){ const r=UI.jobId?renderJobDetail(v):renderJobs(v); if(banner) v.innerHTML=banner+v.innerHTML; return r; }
+  if(UI.tab==='pipeline'){ const r=renderPipeline(v); if(banner) v.innerHTML=banner+v.innerHTML; return r; }
+  if(UI.tab==='responses'){ const r=renderResponses(v); if(banner) v.innerHTML=banner+v.innerHTML; return r; }
   if(UI.tab==='flags') return renderFlags(v);
   if(UI.tab==='settings') return renderSettings(v);
 }

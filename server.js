@@ -1523,6 +1523,20 @@ app.patch('/api/candidates/:id', (req, res) => {
   if (b.dnc !== undefined) c.dnc = !!b.dnc;
   save(); res.json(c);
 });
+// Act on a candidate whose "resurface later" date has arrived.
+app.post('/api/candidates/:id/resurface', (req, res) => {
+  const c = db.candidates.find(x => x.id === req.params.id);
+  if (!c) return res.status(404).json({ error: 'Candidate not found.' });
+  const action = req.body.action;
+  if (action === 'rerun') {
+    // Re-open WhatsApp outreach: reset to 'new' so the normal ▶ WhatsApp button can fire fresh outreach.
+    c.wa.stage = 'new'; c.wa.activePoll = null; c.wa.activePollMsgId = null; c.wa.pending = null;
+    delete c.wa.answers.resurfaceDate;
+  } else if (action === 'dismiss') {
+    delete c.wa.answers.resurfaceDate;   // stop nagging, keep them as declined
+  } else return res.status(400).json({ error: 'Unknown action.' });
+  save(); res.json({ ok: true, candidate: c });
+});
 app.post('/api/candidates/bulk', (req, res) => { const { jobId, rows } = req.body; let added = 0; (rows || []).forEach(r => { if (r.name) { db.candidates.push(mkCand(jobId, r)); added++; } }); save(); res.json({ added }); });
 app.delete('/api/candidates/:id', (req, res) => { db.candidates = db.candidates.filter(c => c.id !== req.params.id); save(); res.json({ ok: true }); });
 
