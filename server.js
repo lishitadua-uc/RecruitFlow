@@ -34,11 +34,15 @@ const jobOf = c => db.jobs.find(j => j.id === c.jobId);
 const candsOf = jid => db.candidates.filter(c => c.jobId === jid);
 function normPhone(p) { let d = (p || '').replace(/\D/g, ''); if (d.length === 10) d = '91' + d; return d; }
 const last10 = p => normPhone(p).slice(-10);
+// Canonical display/storage form — always "+91XXXXXXXXXX" for Indian numbers. Empty stays empty.
+function fmtPhone(p) { const d = normPhone(p); return d ? '+' + d : ''; }
+// Normalize every existing candidate's phone to the canonical +91 form on startup (idempotent).
+(() => { let changed = false; (db.candidates || []).forEach(c => { if (c && c.phone) { const f = fmtPhone(c.phone); if (f !== c.phone) { c.phone = f; changed = true; } } }); if (changed && !process.env.RF_TEST) fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2)); })();
 const EXP = ['0-1 years', '1-3 years', '3-5 years', '5-8 years', '8+ years'];
 const ROLE = ['Individual Contributor', 'Team Lead / Senior', 'Manager', 'Fresher / Looking for first role', 'Other'];
 const TIME = ['Morning (9 AM - 12 PM)', 'Afternoon (12 PM - 3 PM)', 'Evening (3 PM - 6 PM)'];
-const STAGE_LABEL = { new: 'Not started', outreach: 'Outreach sent', details_form: 'Details form sent', location: 'Asked location', preflocation: 'Preferred location', workpref: 'Work preference', experience: 'Experience', role: 'Current role', currentctc: 'Current CTC', expectedctc: 'Expected CTC', notice: 'Notice period', skills: 'Skill questions', resume: 'Resume request', reason: 'Asked why not interested', resurface: 'Resurface timing', avail: 'Scheduling', availdate: 'Scheduling', availtime: 'Scheduling', avail_time: 'Scheduling', avail_day: 'Scheduling', scheduled: 'Call scheduled ✓', declined: 'Not interested', location_dropout: 'Location mismatch', notice_dropout: 'Notice too long' };
-const isTerminal = s => ['scheduled', 'declined', 'location_dropout', 'notice_dropout'].includes(s);
+const STAGE_LABEL = { new: 'Not started', outreach: 'Outreach sent', details_form: 'Details form sent', location: 'Asked location', preflocation: 'Preferred location', workpref: 'Work preference', experience: 'Experience', role: 'Current role', currentctc: 'Current CTC', expectedctc: 'Expected CTC', notice: 'Notice period', skills: 'Skill questions', resume: 'Resume request', keepprofile: 'Asked to keep profile', reason: 'Asked why not interested', resurface: 'Resurface timing', avail: 'Scheduling', availdate: 'Scheduling', availtime: 'Scheduling', avail_time: 'Scheduling', avail_day: 'Scheduling', scheduled: 'Call scheduled ✓', declined: 'Not interested', location_dropout: 'Location mismatch', awaiting_role: 'Awaiting a role in their city', notice_dropout: 'Notice too long', pending_review: 'Pending recruiter review' };
+const isTerminal = s => ['scheduled', 'declined', 'location_dropout', 'awaiting_role', 'notice_dropout', 'pending_review'].includes(s);
 
 // Classify a job as Managerial (Senior Manager & above) or Individual Contributor, from its title.
 // Rule: "Senior … Manager" and above = Managerial; a plain Manager / Associate / IC title = IC.
@@ -92,34 +96,20 @@ function detectInterest(t) {
   if (/^\s*(2|b)\b/.test(t)) return 'no';
   return null;
 }
-// ---- "Not interested" reason sub-flow ----
-const REASON_OPTS = ['Not job-hunting right now', "This role isn't the right fit", 'Looking for a more senior role', 'Not keen on Urban Company', 'Something else'];
-// City-poll options + "Other" escape hatch, and the resume yes/skip poll.
-const OTHER_CITY_LABEL = 'Other (type my city)';
-const RESUME_YES_LABEL = "Yes, I'll share the link";
-const RESUME_SKIP_LABEL = 'Skip for now';
-function locationPollOptions(j) {
-  const metros = ['Mumbai', 'Delhi NCR', 'Bangalore', 'Pune', 'Hyderabad', 'Chennai', 'Kolkata'];
-  let opts = [];
-  if (j && j.location && !metros.some(m => m.toLowerCase() === j.location.toLowerCase())) opts.push(j.location);
-  opts = [...new Set(opts.concat(metros))].slice(0, 6);
-  opts.push(OTHER_CITY_LABEL);
-  return opts;
-}
-function isOtherCityAnswer(t) { const tl = (t || '').trim().toLowerCase(); return tl === OTHER_CITY_LABEL.toLowerCase() || tl === 'other' || tl === 'others'; }
-const RESURFACE_OPTS = ['Check back in ~1 month', 'Check back in ~3 months', 'Check back in ~6 months', "Please don't reach out again"];
-function detectReason(t) {
-  const tl = (t || '').toLowerCase();
-  if (/not job ?hunting|not (actively )?looking|not searching|not on the market|happy (where|with|in)|settled|currently (employed|happy)|not (looking )?(for|to)( a)? (change|switch|move)|don'?t want to (switch|change|move)|not active/.test(tl)) return 'not_looking';
-  if (/senior|higher|bigger|lead role|leadership|head\b|director|\bvp\b|more senior|next level|sr\.?\s|growth role/.test(tl)) return 'senior';
-  if (/urban company|\buc\b|this company|your company|the company|company itself|brand/.test(tl)) return 'company';
-  if (/role|fit|profile|\bjd\b|responsibilit|domain|not my (area|field|domain)|different (field|domain|area)|category|function/.test(tl)) return 'role';
-  return 'other';
-}
+// ---- "Not interested" → keep-profile + resurface-timing sub-flow ----
+const KEEPPROFILE_YES = 'Yes, please';
+const KEEPPROFILE_NO = "No, that's okay";
+const RESURFACE_OPTS = ['Within 1 month', 'In 2–3 months', 'In 3–6 months', 'After 6 months', 'Not sure yet'];
+// Returns a number of months (0 = never resurface), the string 'unsure' (keep profile, no set timing), or null (couldn't parse — ask again).
 function parseResurfaceMonths(t) {
   const tl = (t || '').toLowerCase();
-  if (/don'?t|do not|never|stop|remove|no thanks|not at all/.test(tl)) return 0;     // do not resurface
-  if (/\b1\b|one|a month|next month|month/.test(tl) && !/3|6|three|six/.test(tl)) return 1;
+  if (/not sure|dont know|don'?t know|no idea|not certain|unsure/.test(tl)) return 'unsure';
+  if (/don'?t|do not|never|stop|remove|no thanks|not at all|please don'?t/.test(tl)) return 0;
+  if (/within 1|1 month|one month|\ba month\b|next month/.test(tl)) return 1;
+  if (/2.?3|2 to 3|two.?three/.test(tl)) return 3;
+  if (/3.?6|3 to 6|three.?six/.test(tl)) return 6;
+  if (/after 6|6\+|more than 6|beyond 6/.test(tl)) return 9;
+  if (/\b1\b/.test(tl) && !/[236]|three|six/.test(tl)) return 1;
   if (/\b3\b|three|quarter/.test(tl)) return 3;
   if (/\b6\b|six|half/.test(tl)) return 6;
   if (/\b2\b|two/.test(tl)) return 2;
@@ -190,6 +180,8 @@ function detectOptOut(t) { return /\b(stop|unsubscribe|opt ?out|remove me|do ?n'
 function detectWrongNumber(t) { return /\b(wrong (number|person)|you have the wrong|not the right person|this is not [a-z]+ ?'?s? number|galat number|galat insaan)\b/i.test(t || ''); }
 function detectHandoff(t) { return /\b((talk|speak|connect|call|chat) (to|with|me to|me with)?\s*(a |an )?(human|person|recruiter|someone|agent|representative)|real (person|human|recruiter)|actual (person|human|recruiter)|human (please|agent)|baat kara|kisi se baat)\b/i.test(t || ''); }
 function detectScamDoubt(t) { return /\b(who (is this|are you|'?s this)|kaun (ho|hai)|is this (real|legit|genuine|a scam|spam|fake|fraud)|is it (real|legit|genuine)|are you (real|a bot|genuine)|scam|spam|fraud|legit\??|fake|real (job|opportunity|company)\??)\b/i.test(t || ''); }
+// Genuine curiosity about the outreach itself ("what's this about?"), distinct from skepticism/scam-doubt.
+function detectWhatIsThis(t) { return /\b(what('?s| is) this( about| regarding| for)?\??|what do you (want|need)|why (are you|you) (messaging|texting|contacting) me|what('?s| is) (the|this) (opportunity|role|job)( about)?\??|tell me (about|more about) (this|it|the (role|opportunity|job)))\b/i.test(t || ''); }
 function detectBusy(t) { return /\b((call|text|message|contact|reach|ping|connect) me (later|tomorrow|after|in a|next)|busy (right now|at the moment|currently|today)|i'?m busy|i am busy|talk later|reach out later|some other time|another time|abhi (busy|nahi)|thoda busy|baad (me|mein)|kal baat|busy hu)\b/i.test(t || ''); }
 // Pure greeting with no other content ("hi", "hello there", "good morning") → greet + re-ask.
 function detectGreeting(t) { return /^[\s!.,]*(hi+|hey+|hello+|heya|hii+|helo|yo|namaste|namaskar|good\s*(morning|afternoon|evening|day)|gm|gud\s*(mrng|morning)|greetings)([\s!.,👋🙏😊]+(there|team|sir|maam|ma'?am|mam|everyone|all|folks|dear))*[\s!.,👋🙏😊]*$/i.test((t || '').trim()); }
@@ -197,6 +189,8 @@ function detectGreeting(t) { return /^[\s!.,]*(hi+|hey+|hello+|heya|hii+|helo|yo
 function isFlexibleSchedule(t) { return /\b(any ?time|anytime|any ?day|any slot|whenever|you (decide|choose|pick|tell)|up to you|as per you(r)?|your convenience|free all day|free the whole day|free anytime|no preference|whatever works|whichever|either works|both work|as you like|jab bhi|kabhi bhi|aap batao)\b/i.test(t || ''); }
 // A "location" answer that isn't actually a city (flexibility statements).
 function isVagueLocation(t) { return /(any ?where|open to (relocat|any|work)|willing to relocat|can relocat|relocat|remote|flexible|any location|any city|wherever|no preference|open for any|doesn'?t matter|does not matter|koi bhi)/i.test(t || ''); }
+// None of the offered date/time options work for the candidate (not the same as "I'm flexible").
+function detectUnavailable(t) { return /\b(none (of (these|those|the above))?( work| works| suit| suits)?|not available (on )?(any|these|those)|don'?t have (any|these) (day|days|date|dates) free|can'?t make (any|these|it)|nothing works|doesn'?t work for me|not free (on )?(any|these)|no,? (none|these)? ?(dates?|days?) work)\b/i.test(t || ''); }
 
 // Is this message actually about the role / hiring process (vs. casual chit-chat)?
 // Used after a candidate is finished (scheduled/declined) so we don't reply to random messages.
@@ -266,6 +260,15 @@ function matchTimeSlot(text) {
   if (tm) { const s = TIME_SLOTS.find(x => x.start === tm.hour); if (s) return s; }
   return null;
 }
+// Stricter version for messages that also contain a date (e.g. "Saturday - 4 July") — the day-of-month
+// number ("4") must not be misread as a bare time. Only matches a slot label or an explicit time-of-day
+// marker (am/pm, "3:30", "noon", "morning" etc.), never the loose bare-number fallback in parseTimeHour.
+function matchExplicitTimeSlot(text) {
+  const t = (text || '').toLowerCase();
+  for (const s of TIME_SLOTS) if (t.includes(s.label.toLowerCase()) || t.replace(/\s/g, '').includes(s.label.toLowerCase().replace(/\s/g, ''))) return s;
+  if (!/\b(am|pm|noon|morning|afternoon|evening|\d{1,2}:\d{2})\b/i.test(text || '')) return null;
+  return matchTimeSlot(text);
+}
 // Extract a positive number from a CTC answer; returns null if none. Used to make CTC mandatory (and reject 0).
 const WORD_NUMS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, twentyfive: 25, thirty: 30, thirtyfive: 35, forty: 40, fifty: 50 };
 function parseAmount(text) {
@@ -275,6 +278,24 @@ function parseAmount(text) {
   const tl = text.toLowerCase();
   for (const [w, n] of Object.entries(WORD_NUMS)) if (new RegExp('\\b' + w + '\\b').test(tl)) return n;   // "twelve lakhs" → 12
   return null;
+}
+// Robust CTC parser — accepts "12", "12.5", "12 LPA", "₹12,00,000", "1200000", "8 lakh", "8L", monthly figures.
+// Returns a number in LPA (lakhs per annum) for validation/comparison, or null if unparseable.
+function parseCTCValue(text) {
+  if (!text) return null;
+  let t = text.toLowerCase().replace(/₹|rs\.?|inr/g, '').replace(/,/g, '').trim();
+  let numMatch = t.match(/\d+(?:\.\d+)?/);
+  let num = numMatch ? parseFloat(numMatch[0]) : null;
+  if (num === null) { for (const [w, n] of Object.entries(WORD_NUMS)) if (new RegExp('\\b' + w + '\\b').test(t)) { num = n; break; } }
+  if (num === null || num <= 0) return null;
+  const isLakh = /lakh|lac|\bl\b/.test(t);
+  const isLPA = /lpa|per annum|\bpa\b|annual/.test(t);
+  const isMonthly = /\bk\b|thousand|month|monthly|\/mo\b|p\.?m\.?\b/.test(t);
+  if (isLakh || isLPA) return num;
+  if (isMonthly) { let monthlyRupees = num; if (/\bk\b|thousand/.test(t)) monthlyRupees = num * 1000; return (monthlyRupees * 12) / 100000; }
+  // Bare number with no unit words: large numbers are absolute rupees; small ones are already LPA.
+  if (num >= 1000) return num / 100000;
+  return num;
 }
 // Tidy a CTC answer for the recruiter; converts a monthly figure to an approx annual LPA.
 function normalizeCTC(text) {
@@ -330,16 +351,17 @@ function outreachText(c, j) {
 }
 function stagePrompt(stage, c, j) {
   switch (stage) {
-    case 'location': return `Great! 🙌 Before we connect you with our recruiter, a few quick questions.\n\nFirst — what is your *current location*? (the city you're based in now)`;
-    case 'preflocation': return `Got it! And which location would you *prefer* to work in?`;
-    case 'workpref': return `This role is based in *${j.location}* and requires *${j.workingDays} days/week from office*.${j.remote === 'No' ? ' There is no remote option for this role.' : ''}\n\nAre you comfortable with this?`;
-    case 'experience': return `How many years of *experience* do you have?`;
-    case 'currentctc': return `Could you share your *current CTC* (annual, in LPA)? Please reply with a number — e.g. "12" or "12 LPA". (Required to proceed.)`;
-    case 'expectedctc': return `And your *expected CTC* (annual, in LPA)? Please reply with a number — e.g. "15". (Required to proceed.)`;
-    case 'notice': return `What is your *notice period*? (for example: "immediate", "30 days", or "2 months")`;
-    case 'reason': return `No worries at all! 🙂 May I ask what's holding you back?\n\n${REASON_OPTS.map(o => '• ' + o).join('\n')}\n\n(Just reply in a few words.)`;
-    case 'resurface': return `Got it — you're not actively looking right now. When should we check back with you?\n\n${RESURFACE_OPTS.map(o => '• ' + o).join('\n')}`;
-    case 'resume': return `One last thing — do you have an *updated resume* you'd like to share? You can paste a Google Drive link or any public link. If not, just say *"skip"* and we'll move on. 📄`;
+    case 'location': return `Great! 🙌 To help us find the best fit for you, I just have a few quick, easy questions.\n\nFirst — which city are you currently based in?`;
+    case 'workpref': return `Lovely! This role is based in *${j.location}* and involves *${j.workingDays} days/week from office*.${j.remote === 'No' ? ' There is no remote option for this role.' : ''}\n\nAre you comfortable with that?`;
+    case 'preflocation': return `Thanks for sharing! 😊 And which city would you prefer to work in? (If you're open to relocating, feel free to list all the cities that would work for you.)`;
+    case 'experience': return `Wonderful! How many years of *experience* do you have in total?`;
+    case 'currentctc': return `Could you share your *current CTC* (annual)? 😊 Any format works — e.g. "12", "12 LPA", "8 lakh", or "₹12,00,000".`;
+    case 'expectedctc': return `And what's your *expected CTC*? Same deal — any format is fine, e.g. "15" or "15 LPA".`;
+    case 'notice': return `Almost there! What's your *notice period*? (for example: "immediate", "30 days", or "2 months")`;
+    case 'keepprofile': return `Would it be okay if we kept your profile on file for future opportunities that might be a great match? 🙂\n\n• ${KEEPPROFILE_YES}\n• ${KEEPPROFILE_NO}`;
+    case 'resurface': return `Wonderful! 😊 Just so we reach out at the right time — when do you think you'll be open to exploring new opportunities?\n\n${RESURFACE_OPTS.map(o => '• ' + o).join('\n')}`;
+    case 'resume': return `One last thing — do you have an *updated resume* you'd like to share, in *PDF or Word* format? 📄 You can attach it right here. If not, just say *"skip"* and we'll move on.`;
+    case 'skills': return (j.skillQuestions || []).filter(q => q && q.trim())[(c.wa && c.wa.skillIdx) || 0] || '';
     case 'avail':
     case 'availdate': return `Brilliant! 🎉 Let's set up your call. Which *date* works best for you?\n\n${availDateOptions().map(o => '• ' + o.label).join('\n')}\n\n(Reply with a date, e.g. "25 June".)`;
     case 'availtime': return `Great! And which *time slot* suits you?\n\n${TIME_SLOTS.map(s => '• ' + s.label).join('\n')}\n\n(Reply with a slot, e.g. "3 PM".)`;
@@ -352,19 +374,95 @@ function clarify(stage, j) {
     case 'outreach': return note + `Are you open to exploring this role? Just let me know.`;
     case 'workpref': return note + `Are you comfortable with the office location and working days?`;
     case 'experience': return note + `How many years of experience do you have? (for example, "4 years")`;
-    case 'currentctc': return note + `What is your current CTC? Or say "skip" to pass.`;
-    case 'expectedctc': return note + `What is your expected CTC? You can also say "skip".`;
+    case 'currentctc': return note + `What is your current CTC? Any format works, e.g. "12 LPA" or "8 lakh".`;
+    case 'expectedctc': return note + `What is your expected CTC? Any format works, e.g. "15 LPA".`;
     case 'notice': return note + `What is your notice period? e.g. "30 days", "2 months", or "immediate".`;
     case 'avail': return note + `Please share a day and time that works for a quick call. 🕘`;
   }
   return note;
+}
+// If a skill question is phrased as "A or B" (e.g. "blue collar or white collar"), extract the two
+// options so it can be a proper multi-choice poll instead of a forced Yes/No. Returns null otherwise.
+function parseSkillQuestionOptions(q) {
+  if (!q) return null;
+  const clean = q.trim().replace(/\?+$/, '');
+  const parts = clean.split(/\s+or\s+/i);
+  if (parts.length !== 2) return null;
+  const rightWords = parts[1].trim().split(/\s+/);
+  const leftWords = parts[0].trim().split(/\s+/);
+  const k = rightWords.length;
+  if (k > 3 || leftWords.length < k) return null;
+  const a = leftWords.slice(-k).join(' '), b = rightWords.join(' ');
+  if (!a || !b || a.toLowerCase() === b.toLowerCase()) return null;
+  const titleCase = s => s.replace(/\w\S*/g, w => w[0].toUpperCase() + w.slice(1).toLowerCase());
+  return [titleCase(a), titleCase(b)];
 }
 // Enter the skill-question stage (or skip straight to resume if the job has none).
 function enterSkills(c, ch, out) {
   const j = jobOf(c), qs = (j.skillQuestions || []).filter(q => q && q.trim());
   if (!qs.length) { advance(c, ch, 'resume', out); return; }
   ch.skillIdx = 0; ch.answers.skills = []; ch.stage = 'skills';
-  out.push(`Almost there! A couple of quick questions about your experience. 📝\n\n${qs[0]}`);
+  out.push(`You're doing great! 😊 Just a couple more quick questions.`);
+  out.push(qs[0]);
+}
+// Default auto-schedule notice threshold, used when a job hasn't set its own "Maximum notice period".
+const DEFAULT_MAX_NOTICE_DAYS = 60;
+// EXP bucket labels ("0-1 years", "1-3 years", ...) — the job's required-experience field uses the
+// same buckets (minus " years"), so we can compare candidate vs. requirement by bucket index.
+function expBucketIndex(label) {
+  if (!label) return null;
+  const norm = String(label).replace(/\s*years?$/i, '').trim();
+  const idx = EXP.findIndex(e => e.replace(/\s*years?$/i, '') === norm);
+  return idx === -1 ? null : idx;
+}
+function effectiveMaxNotice(j) { return (j && j.maxNoticeDays !== null && j.maxNoticeDays !== undefined && j.maxNoticeDays !== '') ? Number(j.maxNoticeDays) : DEFAULT_MAX_NOTICE_DAYS; }
+// Decide whether this candidate can be auto-scheduled, or should be parked for manual recruiter review.
+// Never a hard rejection — every path here ends warmly, just routes to the right next step.
+function meetsAutoScheduleCriteria(ch, j) {
+  if (ch.answers.workComfortable === 'No') return false;
+  if (ch.answers.noticePeriodDays != null && ch.answers.noticePeriodDays > effectiveMaxNotice(j)) return false;
+  const reqExpIdx = expBucketIndex(j && j.experience), candExpIdx = expBucketIndex(ch.answers.experience);
+  if (reqExpIdx != null && candExpIdx != null && candExpIdx < reqExpIdx) return false;   // below the role's required experience
+  return true;
+}
+// Add a flag once per kind (idempotent — safe on re-runs). Flags surface in the Responses "Flagged" filter.
+function flagOnce(ch, kind, text) {
+  ch.flags = ch.flags || [];
+  const existing = ch.flags.find(f => f.kind === kind);
+  if (existing) { existing.q = text; existing.ts = now(); return; }   // refresh text if answer changed
+  ch.flags.push({ q: text, kind, auto: true, ts: now(), resolved: false });
+}
+// Auto-flag anything a recruiter should eyeball: experience below the role's range, and the notice period.
+function addScreeningFlags(c, ch, j) {
+  const reqIdx = expBucketIndex(j && j.experience), candIdx = expBucketIndex(ch.answers.experience);
+  if (reqIdx != null && candIdx != null && candIdx < reqIdx)
+    flagOnce(ch, 'experience', `⚠ Experience ${ch.answers.experience} is below the role's requirement (${j.experience} years) — not auto-scheduled; recruiter to review.`);
+  const d = ch.answers.noticePeriodDays;
+  if (d != null) {
+    const label = ch.answers.noticePeriod || (d + ' days');
+    if (d > effectiveMaxNotice(j)) flagOnce(ch, 'notice', `⚠ Notice period "${label}" is beyond ${effectiveMaxNotice(j)} days — not auto-scheduled; recruiter to follow up.`);
+    else flagOnce(ch, 'notice', `ℹ Notice period: ${label} (within ${effectiveMaxNotice(j)} days — scheduled).`);
+  }
+}
+function proceedAfterScreening(c, ch, out) {
+  const j = jobOf(c);
+  addScreeningFlags(c, ch, j);
+  if (meetsAutoScheduleCriteria(ch, j)) { advance(c, ch, 'availdate', out); return; }
+  ch.stage = 'pending_review';
+  out.push(`Thank you so much for sharing all these details with us! 🙏 Our recruiter will personally review your profile and get in touch if there's a great next step. We really appreciate your time today. 😊`);
+}
+// Called once the candidate's preferred location(s) are collected. If they weren't comfortable with the
+// role's office location, we don't screen further — we thank them, keep their profile, and park them in
+// "awaiting_role" so a future job with the same title in their preferred city can auto-pick them up.
+function afterPreferredLocation(c, ch, out) {
+  const j = jobOf(c);
+  if (ch.answers.workComfortable === 'No') {
+    ch.stage = 'awaiting_role';
+    flagOnce(ch, 'location', `📍 Prefers ${ch.answers.preferredLocation} — this role is in ${j ? j.location : 'another city'}. Parked; will auto-match a future "${j ? j.title : ''}" opening there.`);
+    out.push(`Thank you so much for your time! 🙏 Since this role is based in *${j ? j.location : 'another city'}*, it may not be the right fit right now — but we'll keep your profile on file and reach out the moment we have a relevant *${j ? j.title : 'opening'}* in *${ch.answers.preferredLocation}*. Wishing you all the best! 😊`);
+    return;
+  }
+  advance(c, ch, 'experience', out);
 }
 
 /* ---------------- Flow engine (channel-agnostic: drives WhatsApp & Email) ---------------- */
@@ -373,7 +471,7 @@ function confirmSchedule(c, ch, out) {
   ch.stage = 'scheduled';
   onScheduled(c, ch);   // build calendar links + email invites to both parties
   const link = ch.answers.candidateCalendarLink;
-  out.push(`Perfect! ✅ I've noted your availability: *${ch.answers.availability}*. Our recruiter will reach out to confirm the call. Please keep your phone handy — looking forward to connecting you! 📞` + (link ? `\n\n📅 Add this call to your calendar: ${link}` : ''));
+  out.push(`Wonderful! 🎉 Your call with the recruiter has been scheduled for *${ch.answers.availability}*. You'll receive a calendar invite shortly — please do accept it so we can confirm the slot. Looking forward to connecting you! 😊📞` + (link ? `\n\n📅 Add this call to your calendar: ${link}` : ''));
 }
 function askQuestion(c, ch, text, out) { const m = matchTemplate(text, jobOf(c)); out.push(m.resp); if (m.flag) ch.flags.push({ q: text, ts: now(), resolved: false }); return m.flag; }
 // Side-question mid-flow. Only the true catch-all (isFallback) jumps to scheduling; known templates just answer + re-ask.
@@ -428,16 +526,45 @@ function handleIncoming(c, ch, text, skipPush) {
     const days = parseDateToDays(text);
     ch.answers.noticePeriod = 'Serving notice — last working day: ' + text.trim();
     ch.answers.noticePeriodDays = (days == null ? 0 : days);
-    const max = j.maxNoticeDays;
-    if (max !== null && max !== undefined && max !== '' && days != null && days > Number(max)) {
-      ch.stage = 'notice_dropout';
-      out.push(`Thanks for sharing. 🙏 Unfortunately this role needs someone who can join within *${noticeLabel(max)}*, and your last working day is beyond that. We'll keep your profile active for future roles that match. Best of luck!`);
-    } else { enterSkills(c, ch, out); }
+    enterSkills(c, ch, out);   // notice period is only ever collected, never a reason to reject
     return finish(ch, out);
   }
-  if (ch.pending === 'location_city') { ch.pending = null; ch.answers.currentLocation = text.trim(); advance(c, ch, 'preflocation', out); return finish(ch, out); }
-  if (ch.pending === 'preflocation_city') { ch.pending = null; ch.answers.preferredLocation = text.trim(); advance(c, ch, 'workpref', out); return finish(ch, out); }
-  if (ch.pending === 'resume_link') { ch.pending = null; ch.answers.resume = detectSkip(text) ? 'Not shared' : text.trim(); advance(c, ch, 'availdate', out); return finish(ch, out); }
+  if (ch.pending === 'resume_file') {
+    if (detectSkip(text)) { ch.pending = null; ch.answers.resume = 'Not shared'; proceedAfterScreening(c, ch, out); return finish(ch, out); }
+    // Any other text (e.g. a pasted link) isn't a file — keep asking for the actual attachment.
+    out.push(`I'll need the actual file, not a link 🙂 Please attach your resume here as a *PDF or Word* document — or say *"skip"* if you don't have one handy.`);
+    return finish(ch, out);
+  }
+  if (ch.pending === 'preflocation_more') {
+    const v = detectComfort(text);
+    if (v === 'yes') { ch.pending = 'preflocation_extra'; out.push('Sure! Which other city? 🙂'); return finish(ch, out); }
+    if (v === 'no') { ch.pending = null; afterPreferredLocation(c, ch, out); return finish(ch, out); }
+    out.push(`Just to confirm — would you like to add another city? (yes/no)`); return finish(ch, out);
+  }
+  if (ch.pending === 'preflocation_extra') {
+    ch.pending = 'preflocation_more';
+    ch.answers.preferredLocation += ', ' + text.trim();
+    out.push(`Added *${text.trim()}*! 😊 Would you like to add any other city? (yes/no)`);
+    return finish(ch, out);
+  }
+  if (ch.pending === 'avail_none_confirm') {
+    ch.pending = null;
+    const v = detectComfort(text);
+    if (v === 'no') {
+      ch.stage = 'pending_review';
+      out.push(`No problem at all — thank you so much for your time today! 🙏 Our recruiter will personally follow up with you to find a suitable next step.`);
+      return finish(ch, out);
+    }
+    ch.pending = 'avail_open';
+    out.push(`Wonderful! 😊 Since this is a *high-priority role* and we're hoping to close things within the next *3-4 days*, what date and time would work best for you?`);
+    return finish(ch, out);
+  }
+  if (ch.pending === 'avail_open') {
+    ch.pending = null;
+    ch.answers.availability = text.trim();
+    confirmSchedule(c, ch, out);
+    return finish(ch, out);
+  }
 
   if (ch.stage === 'new' || isTerminal(ch.stage)) {
     // Candidate is finished (scheduled / declined / dropped). Only respond to messages that are actually
@@ -461,61 +588,66 @@ function handleIncoming(c, ch, text, skipPush) {
 
   switch (ch.stage) {
     case 'outreach': {
+      if (detectWhatIsThis(text)) {
+        out.push(`Of course! 😊 We're reaching out from *${db.company}* about a potential *${j ? j.title : ''}* opportunity that we think could be a great fit for you. Would you like to explore it further?`);
+        break;
+      }
       const v = detectInterest(text);
       if (v === 'yes') { ch.answers.interested = 'Yes'; advance(c, ch, 'location', out); }
       else if (v === 'no' || v === 'maybe') {
-        // Not interested (firm or soft) → ask WHY before letting them go.
+        // Not interested (firm or soft) → thank them, then ask if we can keep their profile for later.
         ch.answers.interested = 'No';
-        advance(c, ch, 'reason', out);
+        out.push(`Thank you so much for letting us know! 🙏`);
+        advance(c, ch, 'keepprofile', out);
       }
       else { if (questionLike(text)) sideQuestion(c, ch, text, out, false); out.push(clarify('outreach', j)); }
       break;
     }
-    case 'reason': {
-      const r = detectReason(text);
-      const label = { not_looking: 'Not actively looking right now', senior: 'Wants a more senior role', company: 'Not keen on Urban Company', role: "Role isn't the right fit", other: text.trim() }[r];
-      ch.answers.declineReason = label;
-      if (r === 'not_looking') { advance(c, ch, 'resurface', out); break; }
-      ch.stage = 'declined';
-      if (r === 'senior') out.push("Thanks for sharing! 🙏 I've noted you're after a more senior role — we'll reach out if something at that level opens up. All the best!");
-      else if (r === 'company') out.push("Totally understand, and thanks for your honesty. 🙏 We won't keep messaging — if you ever reconsider, just reply here. Best of luck!");
-      else if (r === 'role') out.push("Got it — thanks! 🙏 I'll keep your profile active and reach out when a better-matching role comes up.");
-      else out.push("Thank you for letting me know! 🙏 We'll keep your profile and reach out if a better fit appears. All the best!");
+    case 'keepprofile': {
+      const v = detectComfort(text);
+      if (v === 'yes') { advance(c, ch, 'resurface', out); }
+      else if (v === 'no') { ch.stage = 'declined'; out.push("No problem at all, and thank you so much for your time today! 🙏 Wishing you all the best."); }
+      else { out.push(`Just to confirm — would it be okay if we kept your profile on file for future opportunities? 🙂`); }
       break;
     }
     case 'resurface': {
       const months = parseResurfaceMonths(text);
-      if (months === null) { out.push(`No problem! Roughly when should we check back? ${RESURFACE_OPTS.map(o => '• ' + o).join('  ')}`); break; }
+      if (months === null) { out.push(`No problem! Just let us know roughly when: ${RESURFACE_OPTS.map(o => '• ' + o).join('  ')}`); break; }
       ch.stage = 'declined';
-      ch.answers.declineReason = ch.answers.declineReason || 'Not actively looking right now';
-      if (months === 0) { c.dnc = true; ch.answers.resurfaceAfter = 'Do not resurface'; out.push("Understood — I won't reach out again. Wishing you all the best! 🙏"); break; }
+      if (months === 0) { c.dnc = true; ch.answers.resurfaceAfter = "Asked not to be contacted again"; out.push("Understood — we won't reach out again. Thank you so much for your time today, and all the best! 🙏"); break; }
+      if (months === 'unsure') {
+        ch.answers.resurfaceAfter = 'Not sure yet';
+        out.push(`No problem at all! 😊 We'll keep your profile on file and reach out if a great opportunity comes up. In the meantime, feel free to follow *${db.company}* on LinkedIn or check our Careers page for new openings. Thank you so much, and take care! 🙏`);
+        break;
+      }
       const d = new Date(); d.setMonth(d.getMonth() + months);
       ch.answers.resurfaceAfter = `~${months} month${months > 1 ? 's' : ''}`;
       ch.answers.resurfaceDate = d.toISOString();
-      out.push(`Perfect — I'll resurface your profile around *${d.toLocaleString('en-IN', { month: 'long', year: 'numeric' })}* and reach out then. Thanks, and all the best till then! 🙏`);
+      out.push(`Perfect! 😊 We'll reach out again around *${d.toLocaleString('en-IN', { month: 'long', year: 'numeric' })}* if there's a great fit. In the meantime, do follow *${db.company}* on LinkedIn or check our Careers page for openings. Thank you so much, and take care until then! 🙏`);
       break;
     }
     case 'location': {
       if (questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('location', c, j)); break; }
-      if (isOtherCityAnswer(text)) { ch.pending = 'location_city'; out.push('Sure! 🙂 Please type the name of your current city.'); break; }
       // "anywhere / open to relocate / remote" isn't a current city — ask once for the actual city.
       if (isVagueLocation(text) && !ch.askedCity) { ch.askedCity = true; out.push("Got it! 🙂 And just so we have it right — which city are you *based in right now*?"); break; }
-      ch.answers.currentLocation = text.trim(); advance(c, ch, 'preflocation', out);
-      break;
-    }
-    case 'preflocation': {
-      if (questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('preflocation', c, j)); break; }
-      if (isOtherCityAnswer(text)) { ch.pending = 'preflocation_city'; out.push('No problem! Please type your preferred city.'); break; }
-      // For preferred location, flexibility is a perfectly valid answer.
-      ch.answers.preferredLocation = isVagueLocation(text) ? 'Open to any location / relocation' : text.trim();
-      advance(c, ch, 'workpref', out);
+      ch.answers.currentLocation = text.trim(); advance(c, ch, 'workpref', out);
       break;
     }
     case 'workpref': {
       const v = detectComfort(text);
-      if (v === 'yes') { ch.answers.workComfortable = 'Yes'; advance(c, ch, 'experience', out); }
-      else if (v === 'no') { ch.answers.workComfortable = 'No'; ch.stage = 'location_dropout'; out.push(`I understand. 🙏 Unfortunately this role requires office presence in *${j.location}*. We'll keep your profile active for future opportunities matching your preference. Best of luck!`); }
+      if (v === 'yes') { ch.answers.workComfortable = 'Yes'; advance(c, ch, 'preflocation', out); }
+      else if (v === 'no') { ch.answers.workComfortable = 'No'; out.push(`Thanks for being upfront about that! 🙂`); advance(c, ch, 'preflocation', out); }
       else { if (questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; } out.push(clarify('workpref', j)); }
+      break;
+    }
+    case 'preflocation': {
+      if (questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('preflocation', c, j)); break; }
+      // "Anywhere / open to relocate" already covers all cities — no need to ask for more.
+      if (isVagueLocation(text)) { ch.answers.preferredLocation = 'Open to any location / relocation'; afterPreferredLocation(c, ch, out); break; }
+      // A specific city was given — check if there's another before moving on, so we don't miss any.
+      ch.answers.preferredLocation = text.trim();
+      ch.pending = 'preflocation_more';
+      out.push(`Got it — *${text.trim()}* noted! 🙂 Would you like to add any other city? (yes/no)`);
       break;
     }
     case 'experience': {
@@ -525,20 +657,26 @@ function handleIncoming(c, ch, text, skipPush) {
       break;
     }
     case 'currentctc': {
-      if (!/\d/.test(text) && !parseAmount(text) && questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('currentctc', c, j)); break; }
-      const amt = parseAmount(text);
-      if (amt === null || amt === 0) { out.push(`To proceed, please share your *current CTC* as a number greater than 0 — e.g. "12" or "12 LPA". This field is required. 🙏`); break; }
+      if (!/\d/.test(text) && !parseCTCValue(text) && questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('currentctc', c, j)); break; }
+      const amt = parseCTCValue(text);
+      if (amt === null || amt <= 0) { out.push(`Hmm, I couldn't quite catch a number there 🙂 Could you share your current CTC? Something like "12", "12 LPA", "8 lakh", or "₹12,00,000" all work great!`); break; }
       ch.answers.currentCTC = normalizeCTC(text);
+      ch.answers._currentCTCValue = amt;   // stored for the expected-CTC comparison
       // Combined answer: "current 12, expecting 15" → also capture expected and skip ahead.
       const expM = text.match(/(?:expect(?:ing|ed)?|hoping|looking for|want)\s*[:\-]?\s*(?:around|approx|about)?\s*(\d+(?:\.\d+)?)\s*(lpa|lakh|lac|k)?/i);
-      if (expM && parseFloat(expM[1]) > 0) { ch.answers.expectedCTC = expM[1] + (expM[2] ? ' ' + expM[2] : ' LPA'); advance(c, ch, 'notice', out); break; }
+      if (expM && parseFloat(expM[1]) > 0) {
+        const expAmt = parseCTCValue(expM[1] + ' ' + (expM[2] || 'lpa'));
+        if (expAmt !== null && expAmt >= amt) { ch.answers.expectedCTC = expM[1] + (expM[2] ? ' ' + expM[2] : ' LPA'); advance(c, ch, 'notice', out); break; }
+      }
       advance(c, ch, 'expectedctc', out);
       break;
     }
     case 'expectedctc': {
-      if (!/\d/.test(text) && !parseAmount(text) && questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('expectedctc', c, j)); break; }
-      const amt = parseAmount(text);
-      if (amt === null || amt === 0) { out.push(`To proceed, please share your *expected CTC* as a number greater than 0 — e.g. "15" or "15 LPA". This field is required. 🙏`); break; }
+      if (!/\d/.test(text) && !parseCTCValue(text) && questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('expectedctc', c, j)); break; }
+      const amt = parseCTCValue(text);
+      if (amt === null || amt <= 0) { out.push(`Hmm, I couldn't quite catch a number there 🙂 Could you share your expected CTC? Something like "15", "15 LPA", "10 lakh", or "₹15,00,000" all work great!`); break; }
+      const currentAmt = ch.answers._currentCTCValue;
+      if (currentAmt != null && amt < currentAmt) { out.push(`Just to double check — your expected CTC seems a little lower than your current CTC. 🙂 Could you re-enter your expected CTC?`); break; }
       ch.answers.expectedCTC = normalizeCTC(text); advance(c, ch, 'notice', out);
       break;
     }
@@ -552,28 +690,36 @@ function handleIncoming(c, ch, text, skipPush) {
       const d = detectNoticeDays(text);
       if (d === null) { if (questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; } out.push(clarify('notice', j)); break; }
       ch.answers.noticePeriod = text.trim(); ch.answers.noticePeriodDays = d;
-      const max = j.maxNoticeDays;
-      if (max !== null && max !== undefined && max !== '' && d > Number(max)) {
-        ch.stage = 'notice_dropout';
-        out.push(`Thanks for sharing. 🙏 Unfortunately this role needs someone who can join within *${noticeLabel(max)}*, and your notice period is longer. We'll keep your profile active for future roles that match. Best of luck!`);
-      } else { enterSkills(c, ch, out); }
+      enterSkills(c, ch, out);   // notice period is only ever collected, never a reason to reject
       break;
     }
     case 'skills': {
       const qs = (j.skillQuestions || []).filter(q => q && q.trim());
       const i = ch.skillIdx || 0;
+      const opts = parseSkillQuestionOptions(qs[i]);
+      let answer = null;
+      if (opts) {
+        const tl = text.trim().toLowerCase();
+        answer = opts.find(o => o.toLowerCase() === tl || tl.includes(o.toLowerCase()));
+        if (!answer) { out.push(`Just to confirm — ${opts[0]} or ${opts[1]}? 🙂`); break; }
+      } else {
+        const v = detectComfort(text);
+        if (v === null) { out.push(`Just a quick yes or no would help here 🙂`); out.push(qs[i]); break; }
+        answer = v === 'yes' ? 'Yes' : 'No';
+      }
       ch.answers.skills = ch.answers.skills || [];
-      ch.answers.skills.push({ q: qs[i], a: text.trim() });
+      ch.answers.skills.push({ q: qs[i], a: answer });
       if (i + 1 < qs.length) { ch.skillIdx = i + 1; out.push(qs[i + 1]); }
       else { advance(c, ch, 'resume', out); }
       break;
     }
     case 'resume': {
-      const tl = text.trim().toLowerCase();
-      if (detectSkip(text) || tl === RESUME_SKIP_LABEL.toLowerCase()) { ch.answers.resume = 'Not shared'; advance(c, ch, 'availdate', out); break; }
-      if (tl === RESUME_YES_LABEL.toLowerCase()) { ch.pending = 'resume_link'; out.push('Great! Please paste the link here. 🔗'); break; }
-      ch.answers.resume = text.trim();   // they pasted the link directly without tapping the poll
-      advance(c, ch, 'availdate', out);
+      if (detectSkip(text)) { ch.answers.resume = 'Not shared'; proceedAfterScreening(c, ch, out); break; }
+      const v = detectComfort(text);
+      if (v === 'no') { ch.answers.resume = 'Not shared'; proceedAfterScreening(c, ch, out); break; }
+      // Yes, or anything else (e.g. a pasted link) — we still need the actual file, not text.
+      ch.pending = 'resume_file';
+      out.push(`I'll need the actual file to share with our team 🙂 Could you please attach your resume here as a *PDF or Word* document? Or just say *"skip"* if you don't have one handy.`);
       break;
     }
     case 'avail':         // legacy stage → treat as date selection
@@ -582,14 +728,19 @@ function handleIncoming(c, ch, text, skipPush) {
       // "anytime / you decide / flexible" → pick the earliest offered date and move to time.
       let d = parseDateLoose(text);
       if (!d && isFlexibleSchedule(text)) { d = availDateOptions()[0].date; }
+      if (!d && detectUnavailable(text)) {
+        ch.pending = 'avail_none_confirm';
+        out.push(`No worries at all! 🙂 Would you still like to go ahead with a call with the recruiter?`);
+        break;
+      }
       if (!d) { out.push(`Please pick a *date* for the call. ${availDateOptions().map(o => '• ' + o.label).join('  ')}`); break; }
       ch.answers._dateISO = d.toISOString();
       ch.answers._dateLabel = fmtDateOpt(d);
-      const slotSame = matchTimeSlot(text);   // if they gave a time too (e.g. "Friday 3 PM"), use it now
+      const slotSame = matchExplicitTimeSlot(text);   // only if they gave an explicit time too (e.g. "Friday 3 PM")
       if (slotSame) {
         const start = new Date(d); start.setHours(slotSame.start, 0, 0, 0);
         ch.answers.scheduledStartISO = start.toISOString();
-        ch.answers.scheduledEndISO = new Date(start.getTime() + 60 * 60000).toISOString();
+        ch.answers.scheduledEndISO = new Date(start.getTime() + 15 * 60000).toISOString();
         ch.answers.availability = `${ch.answers._dateLabel}, ${slotSame.label}`;
         ch.stage = 'availtime'; confirmSchedule(c, ch, out);
       } else { advance(c, ch, 'availtime', out); }
@@ -601,7 +752,7 @@ function handleIncoming(c, ch, text, skipPush) {
       if (!slot) { out.push(`Please pick a *time slot*: ${TIME_SLOTS.map(s => s.label).join('  •  ')}`); break; }
       const start = new Date(ch.answers._dateISO || Date.now()); start.setHours(slot.start, 0, 0, 0);
       ch.answers.scheduledStartISO = start.toISOString();
-      ch.answers.scheduledEndISO = new Date(start.getTime() + 60 * 60000).toISOString();
+      ch.answers.scheduledEndISO = new Date(start.getTime() + 15 * 60000).toISOString();
       ch.answers.availability = `${ch.answers._dateLabel}, ${slot.label}`;
       confirmSchedule(c, ch, out);
       break;
@@ -633,7 +784,9 @@ function expectationFor(stage, j) {
     case 'expectedctc': return 'their expected CTC (annual salary) as a number';
     case 'notice': return 'their notice period (immediate / a number of days / or that they are serving notice)';
     case 'skills': return 'their answer to the recruiter\'s skill question';
-    case 'resume': return 'an updated resume link (or that they want to skip)';
+    case 'resume': return 'whether they want to share an updated resume (PDF/Word attachment) or skip';
+    case 'keepprofile': return 'whether we can keep their profile on file for future opportunities (yes/no)';
+    case 'resurface': return 'roughly when they might be open to exploring new opportunities';
     case 'avail': case 'availdate': return 'the date they want the recruiter call';
     case 'availtime': return 'the time slot they want for the call';
     default: return 'nothing further — the conversation has reached an end state';
@@ -664,7 +817,7 @@ function aiSystemPrompt(c, ch) {
 THE ROLE
   Title: ${j ? j.title : '-'}
   Location: ${j ? j.location : '-'} (${j ? j.workingDays : '?'} days/week from office${j && j.remote === 'No' ? ', no remote' : ''})
-  Max notice period accepted: ${j && j.maxNoticeDays != null ? noticeLabel(j.maxNoticeDays) : 'no limit'}
+  Max notice period for auto-scheduling: ${noticeLabel(j && j.maxNoticeDays != null ? j.maxNoticeDays : DEFAULT_MAX_NOTICE_DAYS)} (never reject the candidate over this — just note it)
 ${skillQs ? '  Skill questions for this role:\n' + skillQs : ''}
 
 WHAT WE'VE COLLECTED SO FAR
@@ -716,7 +869,9 @@ function rulesUnderstand(c, ch, text) {
   if (/\b(stop|unsubscribe|do ?n['o]?t (message|contact|text)|remove me|leave me alone|do not contact|not interested ever)\b/i.test(t)) return false;
   const s = ch.stage;
   if (ch.pending === 'last_working_day') return parseDateToDays(t) !== null;
-  if (ch.pending === 'location_city' || ch.pending === 'preflocation_city' || ch.pending === 'resume_link') return true;
+  if (ch.pending === 'resume_file') return true;
+  if (ch.pending === 'preflocation_more' || ch.pending === 'avail_none_confirm') return detectComfort(t) !== null || questionLike(t);
+  if (ch.pending === 'preflocation_extra' || ch.pending === 'avail_open') return true;
   if (detectGreeting(t)) return true;   // pure greetings handled free
   if (s === 'new' || isTerminal(s)) return true;   // ack / relevance filter already handle these (no AI needed)
   const q = questionLike(t);
@@ -725,11 +880,11 @@ function rulesUnderstand(c, ch, text) {
     case 'location': case 'preflocation': return true;       // any text is taken as the city
     case 'workpref': return detectComfort(t) !== null || q;
     case 'experience': return detectExperience(t) !== null || q;
-    case 'currentctc': case 'expectedctc': return (q && !/\d/.test(t) && !parseAmount(t)) ? true : (parseAmount(t) ? true : false);
+    case 'currentctc': case 'expectedctc': return (q && !/\d/.test(t) && !parseCTCValue(t)) ? true : (parseCTCValue(t) ? true : false);
     case 'notice': return /\bserv(e|ing)?\b|on notice|notice running|notice going on/i.test(t) || detectNoticeDays(t) !== null || q;
-    case 'skills': return true;                              // any text recorded as the answer
+    case 'skills': return true;                              // yes/no or a multi-choice answer — handled in-flow
     case 'resume': return true;                              // any text / "skip" recorded
-    case 'reason': return true;                              // any reason text is mapped to a category
+    case 'keepprofile': return detectComfort(t) !== null || q;
     case 'resurface': return parseResurfaceMonths(t) !== null || q;
     case 'avail': case 'availdate': return parseDateLoose(t) !== null || isFlexibleSchedule(t) || q;
     case 'availtime': return matchTimeSlot(t) !== null || isFlexibleSchedule(t);
@@ -765,8 +920,9 @@ async function aiProcess(c, ch, text) {
       return finish(ch, [reply || `Apologies for the confusion! I'll remove this number. Have a great day.`]);
     }
     case 'not_interested': {
-      ch.stage = 'declined';
-      return finish(ch, [reply || "No worries! We'll keep your profile and reach out if a better fit comes up. Best of luck! 🙏"]);
+      const out2 = [reply || "Thank you so much for letting us know! 🙏"];
+      advance(c, ch, 'keepprofile', out2);
+      return finish(ch, out2);
     }
     case 'human_handoff': {
       return finish(ch, [reply || "Absolutely — I'll have our recruiter reach out to you personally. 🙌"]);
@@ -847,8 +1003,8 @@ function eventDetailsCandidate(c, ch) {
 }
 // The call slot (30 min) from the candidate's stated availability.
 function callSlot(ch) {
-  if (ch.answers.scheduledStartISO) { const start = new Date(ch.answers.scheduledStartISO); const end = ch.answers.scheduledEndISO ? new Date(ch.answers.scheduledEndISO) : new Date(start.getTime() + 60 * 60000); return { start, end, uncertain: false }; }
-  const { start, uncertain } = parseAvailabilityToDate(ch.answers.availability); return { start, end: new Date(start.getTime() + 30 * 60000), uncertain };
+  if (ch.answers.scheduledStartISO) { const start = new Date(ch.answers.scheduledStartISO); const end = ch.answers.scheduledEndISO ? new Date(ch.answers.scheduledEndISO) : new Date(start.getTime() + 15 * 60000); return { start, end, uncertain: false }; }
+  const { start, uncertain } = parseAvailabilityToDate(ch.answers.availability); return { start, end: new Date(start.getTime() + 15 * 60000), uncertain };
 }
 // Build a Google Calendar "add event" link (pre-filled). No API/OAuth needed — works for anyone.
 function gcalLink(title, details, location, start, end) {
@@ -1073,11 +1229,11 @@ async function handleEmailFormReply(c, emailParsed) {
   const resumeFile = att.find(a => /\.(pdf|doc|docx)$/i.test(a.filename || ''));
   c.em.answers.resume = resumeFile ? `Attached: ${resumeFile.filename}` : (parsed.resume || 'Not shared');
 
-  // Notice period eligibility check
-  const max = j && j.maxNoticeDays;
-  if (max !== null && max !== undefined && max !== '' && parsed.noticePeriodDays != null && parsed.noticePeriodDays > Number(max)) {
-    c.em.stage = 'notice_dropout';
-    out.push(`Hi ${c.name},\n\nThank you for sharing your details!\n\nUnfortunately, this role requires someone who can join within ${noticeLabel(max)}, and your current notice period is longer than that. We're unable to take this forward at this time.\n\nWe'll keep your profile active for future opportunities — feel free to reach out on this email whenever you're looking again.\n\nBest of luck!\n\n${db.company} Talent Team`);
+  // Notice period / experience are only ever collected, never a reason to reject — same policy as WhatsApp.
+  addScreeningFlags(c, c.em, j);
+  if (!meetsAutoScheduleCriteria(c.em, j)) {
+    c.em.stage = 'pending_review';
+    out.push(`Hi ${c.name},\n\nThank you so much for sharing all these details with us! 🙏\n\nOur recruiter will personally review your profile and get in touch if there's a suitable next step.\n\nWe really appreciate your time.\n\n${db.company} Talent Team`);
     return finish(c.em, out);
   }
 
@@ -1135,7 +1291,7 @@ async function checkNudges() {
       try {
         if (isWA) {
           if (waStatus !== 'ready') continue;
-          await client.sendMessage(c.wa.chatId || (normPhone(c.phone) + '@c.us'), text);
+          await waSend(c.wa.chatId || (normPhone(c.phone) + '@c.us'), text);
         } else {
           if (!mailerReady() || !c.email) continue;
           await sendEmail(c.email, emailSubject(c), stripMd(text));
@@ -1149,6 +1305,31 @@ async function checkNudges() {
   }
 }
 if (!process.env.RF_TEST) { setInterval(() => checkNudges().catch(() => {}), 60 * 60 * 1000); setTimeout(() => checkNudges().catch(() => {}), 60000); }
+// Day-of reminder — fires once, on the morning of the scheduled call, to both the candidate and the recruiter.
+async function checkDayOfReminders() {
+  if (waStatus !== 'ready') return;
+  const today = new Date().toDateString();
+  for (const c of db.candidates) {
+    const ch = c.wa;
+    if (!ch || ch.stage !== 'scheduled' || ch.answers.reminderSent) continue;
+    const startISO = ch.answers.scheduledStartISO; if (!startISO) continue;
+    if (new Date(startISO).toDateString() !== today) continue;
+    const j = jobOf(c);
+    const timeLabel = new Date(startISO).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true });
+    try {
+      if (!c.dnc) {
+        await waSend(ch.chatId || (normPhone(c.phone) + '@c.us'), `Hi ${c.name}! 👋 Just a friendly reminder — your call with the *${db.company}* recruiter is *today at ${timeLabel}*. Please keep your phone handy, and all the best! 😊📞`);
+      }
+      if (waInfo) {
+        await waSend(waInfo + '@c.us', `🔔 Reminder: call with *${c.name}* (${j ? j.title : ''}) today at *${timeLabel}*.\n📱 ${c.phone}`);
+      }
+      ch.answers.reminderSent = true;
+      save();
+      log(`🔔 Day-of reminder sent for ${c.name}'s ${timeLabel} call.`);
+    } catch (e) { log(`Day-of reminder failed for ${c.name}: ${e.message}`); }
+  }
+}
+if (!process.env.RF_TEST) { setInterval(() => checkDayOfReminders().catch(() => {}), 30 * 60 * 1000); setTimeout(() => checkDayOfReminders().catch(() => {}), 90000); }
 
 let emailPolling = false;
 // Automated / calendar / no-reply emails that must NEVER be treated as a candidate reply.
@@ -1208,6 +1389,13 @@ if (!process.env.RF_TEST) setInterval(() => { pollEmail().catch(() => {}); }, 20
 let waStatus = 'starting', qrDataUrl = null, waInfo = null;
 
 const client = new Client({ authStrategy: new LocalAuth({ dataPath: path.join(__dirname, '.wwebjs_auth') }), puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] } });
+// These Puppeteer-level errors mean the underlying Chrome page/frame has died — whatsapp-web.js
+// doesn't fire 'disconnected' for this, and waStatus stays stuck at "ready" forever, so every send
+// silently (or visibly) fails until someone notices and restarts by hand. Catch it ourselves instead.
+function isFatalWaError(e) { return /detached Frame|Execution context was destroyed|Session closed|Protocol error|Target closed/i.test((e && e.message) || ''); }
+function onFatalWaError(e) { log(`⚠️ Fatal WhatsApp session error (${e.message}) — restarting connection.`); waStatus = 'error'; recoverWhatsApp(); }
+async function waSend(...args) { try { return await client.sendMessage(...args); } catch (e) { if (isFatalWaError(e)) onFatalWaError(e); throw e; } }
+async function waIsRegistered(jid) { try { return await client.isRegisteredUser(jid); } catch (e) { if (isFatalWaError(e)) onFatalWaError(e); throw e; } }
 client.on('qr', async qr => { clearWatchdog(); waStatus = 'qr'; qrDataUrl = await QRCode.toDataURL(qr, { width: 320, margin: 1 }); log('QR generated — scan it from the dashboard.'); });
 client.on('authenticated', () => { waStatus = 'authenticated'; });
 client.on('auth_failure', m => { clearWatchdog(); waStatus = 'auth_failure'; log('Auth failure: ' + m); });
@@ -1268,14 +1456,18 @@ async function resolveNumber(msg) {
 function pollForStage(stage, c, j) {
   switch (stage) {
     case 'outreach':   return { name: `Are you open to exploring this ${j ? j.title : ''} opportunity? 😊`, options: ['Yes, tell me more 👍', 'Not right now'] };
-    case 'location':   return { name: 'Which city are you currently based in? 📍', options: locationPollOptions(j) };
-    case 'preflocation': return { name: 'Which city would you prefer to work in? 📍', options: locationPollOptions(j) };
     case 'workpref':   return { name: `This role is in ${j ? j.location : ''} — ${j ? j.workingDays : ''} days/week from office${j && j.remote === 'No' ? ' (no remote option)' : ''}. Are you comfortable with this?`, options: ['Yes, I\'m comfortable', 'No, that won\'t work'] };
     case 'experience': return { name: 'How many years of work experience do you have?', options: ['0–2 years', '3–5 years', '5–8 years', '8+ years'] };
     case 'notice':     return { name: 'What is your notice period?', options: ['Immediate', '15 days', '30 days', '60 days', '90+ days', 'Currently serving notice'] };
-    case 'resume':     return { name: 'One last thing — do you have an updated resume to share? 📄', options: [RESUME_YES_LABEL, RESUME_SKIP_LABEL] };
-    case 'reason':     return { name: 'No worries! 🙂 May I ask what\'s holding you back?', options: REASON_OPTS };
-    case 'resurface':  return { name: 'Got it — not actively looking right now. When should we check back?', options: RESURFACE_OPTS };
+    case 'skills': {
+      const qs = (j && j.skillQuestions || []).filter(q => q && q.trim());
+      const i = (c.wa && c.wa.skillIdx) || 0;
+      const q = qs[i] || '';
+      const opts = parseSkillQuestionOptions(q);
+      return { name: q || 'Quick question:', options: opts || ['Yes', 'No'] };
+    }
+    case 'keepprofile': return { name: 'Would it be okay if we kept your profile on file for future opportunities? 🙂', options: [KEEPPROFILE_YES, KEEPPROFILE_NO] };
+    case 'resurface':  return { name: 'When do you think you\'ll be open to exploring new opportunities? 😊', options: RESURFACE_OPTS };
     case 'avail':
     case 'availdate':  return { name: 'Which date works best for a quick call? 📅', options: availDateOptions().map(o => o.label) };
     case 'availtime':  return { name: 'And which time slot suits you? 🕘', options: TIME_SLOTS.map(s => s.label) };
@@ -1285,7 +1477,8 @@ function pollForStage(stage, c, j) {
 // Translate a chosen poll option back into text the conversation engine understands.
 function voteToAnswer(stage, optionName) {
   const o = optionName || '';
-  if (stage === 'outreach' || stage === 'workpref') return /^yes/i.test(o) ? 'yes' : 'no';
+  if (stage === 'outreach' || stage === 'workpref' || stage === 'keepprofile') return /^yes/i.test(o) ? 'yes' : 'no';
+  if (stage === 'skills') return o;   // either "Yes"/"No" or the exact multi-choice label — both meaningful as-is
   if (stage === 'experience') return ({ '0–2 years': '2 years', '3–5 years': '4 years', '5–8 years': '6 years', '8+ years': '9 years' })[o] || o;
   if (stage === 'notice') {
     if (/serving/i.test(o)) return 'serving notice';
@@ -1296,19 +1489,31 @@ function voteToAnswer(stage, optionName) {
 // Send the engine's replies to a candidate on WhatsApp — as a poll when the new stage is poll-able, else as text.
 async function sendRepliesWA(c, replies) {
   const ch = c.wa, j = jobOf(c), to = ch.chatId || (normPhone(c.phone) + '@c.us');
-  const poll = pollForStage(ch.stage, c, j);
+  // A pending sub-state (e.g. "what's your last working day?") always expects free text, even if the
+  // underlying stage itself is normally poll-driven — don't re-fire that stage's poll while one is open.
+  const poll = ch.pending ? null : pollForStage(ch.stage, c, j);
   const promptText = poll ? stripMd(stagePrompt(ch.stage, c, j)) : null;
   for (const r of (replies || [])) {
     if (poll && stripMd(r) === promptText) continue;        // skip the text prompt; the poll replaces it
-    try { await client.sendMessage(to, r); } catch (e) { log('WA send failed: ' + e.message); }
+    try { await waSend(to, r); } catch (e) { log('WA send failed: ' + e.message); }
     await new Promise(r => setTimeout(r, 600));
   }
   if (poll && ch.activePoll !== ch.stage) {
-    try { const pm = await client.sendMessage(to, new Poll(poll.name, poll.options, { allowMultipleAnswers: false })); ch.activePoll = ch.stage; ch.activePollMsgId = pm && pm.id ? pm.id._serialized : null; save(); }
-    catch (e) { log('Poll send failed (' + e.message + ') — falling back to text.'); try { await client.sendMessage(to, stripMd(stagePrompt(ch.stage, c, j))); } catch (e2) {} }
+    try { const pm = await waSend(to, new Poll(poll.name, poll.options, { allowMultipleAnswers: false })); ch.activePoll = ch.stage; ch.activePollMsgId = pm && pm.id ? pm.id._serialized : null; save(); }
+    catch (e) { log('Poll send failed (' + e.message + ') — falling back to text.'); try { await waSend(to, stripMd(stagePrompt(ch.stage, c, j))); } catch (e2) {} }
   }
 }
 
+// Guards against processing the exact same WhatsApp message twice for the same candidate record —
+// keyed `${candidateId}|${msgId}` (not just msgId) so legitimate reprocessing under a *different*
+// candidate record — e.g. after a routing fix picks the right one — still goes through.
+const processedWaMsgKeys = new Set();
+// When a message can't be understood, don't fire off "I couldn't understand" right away — a candidate
+// often follows up seconds/minutes later with something clearer, and replying to every unclear message
+// in between just spams them. Hold it briefly; a clearer message supersedes it, otherwise send the
+// clarify reply once the wait elapses with nothing better having arrived.
+const CLARIFY_WAIT_MS = 5 * 60 * 1000;
+const clarifyHold = new Map();   // candidate id -> { timer }
 // Catch up on messages that arrived while this laptop/app was off (runs when WhatsApp becomes ready).
 async function catchUpWhatsApp() {
   try {
@@ -1320,6 +1525,8 @@ async function catchUpWhatsApp() {
       const pending = msgs.filter(m => !m.fromMe && (m.timestamp * 1000) > lastTs).sort((a, b) => a.timestamp - b.timestamp);
       for (const m of pending) {
         if (!m.body) continue;
+        const msgId = m.id && m.id._serialized;
+        if (msgId) { const key = c.id + '|' + msgId; if (processedWaMsgKeys.has(key)) { c.wa.lastProcessedTs = m.timestamp * 1000; continue; } processedWaMsgKeys.add(key); }
         log(`⏳ Catch-up — ${c.name}: ${m.body.slice(0, 40)}`);
         if (c.dnc) { c.wa.lastProcessedTs = m.timestamp * 1000; continue; }
         const useAI = aiReady() && !rulesUnderstand(c, c.wa, m.body);
@@ -1331,11 +1538,23 @@ async function catchUpWhatsApp() {
     }
   } catch (e) { log('Catch-up error: ' + e.message); }
 }
-const ACTIVE = ['outreach', 'location', 'preflocation', 'workpref', 'experience', 'role', 'currentctc', 'expectedctc', 'notice', 'skills', 'avail', 'avail_time', 'avail_day'];
 const tsLast = c => { const t = c.wa.transcript; return t.length ? Date.parse(t[t.length - 1].ts) || 0 : 0; };
+// Same phone number can match multiple candidate records (e.g. contacted again for a different job).
+// Prefer whichever is most recently active — a freshly-contacted new job should win over an older conversation.
+function findCandidateByPhone(num) {
+  const active = db.candidates.filter(x => x.wa.stage !== 'new' && !isTerminal(x.wa.stage) && last10(x.phone) === num.slice(-10));
+  if (active.length) return active.reduce((best, c) => (tsLast(c) > tsLast(best) ? c : best));
+  const any = db.candidates.filter(x => x.wa.stage !== 'new' && last10(x.phone) === num.slice(-10));
+  if (any.length) return any.reduce((best, c) => (tsLast(c) > tsLast(best) ? c : best));
+  return null;
+}
 client.on('message', async msg => {
   try {
     if (msg.from.endsWith('@g.us') || msg.from === 'status@broadcast' || msg.isStatus || msg.fromMe) return;
+    // A voice/video call (or WhatsApp's own system notices) can surface as a "message" with no real
+    // content — don't let those fall through to the conversation engine and trigger a nonsense reply.
+    if (['call_log', 'e2e_notification', 'notification_template', 'gp2', 'group_notification', 'broadcast_notification'].includes(msg.type)) return;
+    if (!msg.body && !msg.hasMedia) return;
     const num = await resolveNumber(msg);
     // Diagnostics: show exactly what WhatsApp exposes about the sender.
     const diag = { from: msg.from };
@@ -1348,17 +1567,66 @@ client.on('message', async msg => {
     // the ACTIVE one over a closed/terminal one — otherwise a live conversation's replies get silently
     // swallowed by an old finished conversation's "not relevant" filter.
     let how = 'number';
-    let c = db.candidates.find(x => x.wa.stage !== 'new' && !isTerminal(x.wa.stage) && last10(x.phone) === num.slice(-10));
-    if (!c) c = db.candidates.find(x => x.wa.stage !== 'new' && last10(x.phone) === num.slice(-10));
+    let c = findCandidateByPhone(num);
     if (!c) { c = db.candidates.find(x => x.wa.stage !== 'new' && x.wa.chatId === msg.from); how = 'pinned-chat'; }
     if (!c) { log(`◀ Incoming from +${num} — not a contacted candidate, ignored (no auto-reply).`); return; }
     if (c.dnc) { log(`◀ ${c.name} opted out (do-not-contact) — ignored.`); return; }
+    // Guard against processing the exact same WhatsApp message twice for this candidate (e.g. a race
+    // with the periodic catch-up sweep) — that's what causes several question prompts to fire in a burst.
+    const msgId = msg.id && msg.id._serialized;
+    if (msgId) { const key = c.id + '|' + msgId; if (processedWaMsgKeys.has(key)) return; processedWaMsgKeys.add(key); }
     c.wa.chatId = msg.from;                        // pin this chat to the candidate for all future messages
     c.wa.lastProcessedTs = (msg.timestamp ? msg.timestamp * 1000 : Date.now());
     save();
     log(`◀ ${c.name} [match:${how}] +${num}: ${msg.body.slice(0, 60)}`);
     c.wa.activePoll = null;   // they replied with text; any open poll is superseded
-    const useAI = aiReady() && !rulesUnderstand(c, c.wa, msg.body);   // rules first; AI only when rules can't parse
+    // Resume stage expects an actual PDF/Word file, not a link — handle a real attachment here.
+    if (msg.hasMedia && (c.wa.stage === 'resume' || c.wa.pending === 'resume_file')) {
+      try {
+        const media = await msg.downloadMedia();
+        const mt = (media && media.mimetype) || '';
+        if (media && /pdf|msword|officedocument\.wordprocessingml/i.test(mt)) {
+          const ext = /pdf/i.test(mt) ? '.pdf' : (/officedocument/i.test(mt) ? '.docx' : '.doc');
+          const fname = `resume_${c.id}_${Date.now()}${ext}`;
+          fs.writeFileSync(path.join(UP_DIR, fname), Buffer.from(media.data, 'base64'));
+          c.wa.answers.resume = `Attached: ${media.filename || fname}`;
+          c.wa.answers.resumeFile = fname;
+          c.wa.pending = null;
+          const out = [];
+          proceedAfterScreening(c, c.wa, out);
+          finish(c.wa, out);
+          await sendRepliesWA(c, out);
+          log(`▶ ${c.name} shared resume (${fname}) → now [${STAGE_LABEL[c.wa.stage] || c.wa.stage}]`);
+        } else {
+          await waSend(msg.from, "Hmm, that doesn't look like a PDF or Word file 🙂 Could you please resend your resume as a PDF or DOCX?");
+        }
+      } catch (e) { log('Resume attachment handling failed for ' + c.name + ': ' + e.message); }
+      return;
+    }
+    // A clear message arrived — if we were holding an earlier unclear one for this candidate, it's
+    // superseded; drop it without ever sending its "couldn't understand" reply.
+    const held = clarifyHold.get(c.id);
+    if (held) { clearTimeout(held.timer); clarifyHold.delete(c.id); }
+    const understood = rulesUnderstand(c, c.wa, msg.body);
+    if (!understood && !aiReady()) {
+      // Without AI, an unclear message would just get a generic "I couldn't understand" — wait a bit
+      // first in case a clearer follow-up is coming, instead of firing that off immediately. Still log
+      // it to the transcript now so it's visible on the dashboard even while we hold off on replying.
+      c.wa.transcript.push({ from: 'candidate', text: msg.body, ts: now() });
+      save();
+      const timer = setTimeout(async () => {
+        clarifyHold.delete(c.id);
+        try {
+          const replies2 = handleIncoming(c, c.wa, msg.body, true);   // skipPush: already logged above
+          await sendRepliesWA(c, replies2);
+          if (replies2 && replies2.length) log(`▶ Replied to ${c.name} → now [${STAGE_LABEL[c.wa.stage] || c.wa.stage}]`);
+        } catch (e) { log('Delayed clarify error for ' + c.name + ': ' + e.message); }
+      }, CLARIFY_WAIT_MS);
+      clarifyHold.set(c.id, { timer });
+      log(`⏸️ ${c.name}: message unclear — holding ${CLARIFY_WAIT_MS / 60000}min for a clearer follow-up before replying.`);
+      return;
+    }
+    const useAI = aiReady() && !understood;   // rules first; AI only when rules can't parse
     const replies = useAI ? await aiProcess(c, c.wa, msg.body) : handleIncoming(c, c.wa, msg.body);
     await sendRepliesWA(c, replies);
     if (replies && replies.length) log(`▶ Replied to ${c.name} → now [${STAGE_LABEL[c.wa.stage] || c.wa.stage}]`);
@@ -1380,8 +1648,7 @@ client.on('vote_update', async (vote) => {
     // Primary match: the exact poll message we sent. Fallbacks: pinned chat, then number.
     let c = pmId ? db.candidates.find(x => x.wa.activePollMsgId && x.wa.activePollMsgId === pmId) : null;
     if (!c && chatId) c = db.candidates.find(x => x.wa.stage !== 'new' && x.wa.chatId === chatId);
-    if (!c && voterNum) c = db.candidates.find(x => x.wa.stage !== 'new' && !isTerminal(x.wa.stage) && last10(x.phone) === voterNum.slice(-10))
-      || db.candidates.find(x => x.wa.stage !== 'new' && last10(x.phone) === voterNum.slice(-10));
+    if (!c && voterNum) c = findCandidateByPhone(voterNum);
     if (!c) { log(`🗳️ Poll vote unmatched — ignored.`); return; }
     if (!c.wa.activePoll) { log(`🗳️ ${c.name}: no active poll, ignoring stale vote.`); return; }
     const answer = voteToAnswer(c.wa.activePoll, sel[0].name);
@@ -1393,28 +1660,43 @@ client.on('vote_update', async (vote) => {
   } catch (e) { log('vote handler error: ' + e.message); }
 });
 if (!process.env.RF_TEST) startWhatsApp();
-module.exports = { detectInterest, detectComfort, detectExperience, detectRole, detectSlot, detectDay, handleIncoming, db };
+module.exports = { detectInterest, detectComfort, detectExperience, detectRole, detectSlot, detectDay, handleIncoming, autoMatchAwaitingCandidates, locationMatches, mkCand, db };
 
 /* ---------------- Send outreach (RUN) ---------------- */
 // Send WhatsApp outreach to ONE candidate. Throws on failure. media is optional (loaded once by the caller).
+// Candidate ids with an outreach send in flight — guards against a double-click / double API call
+// racing through the stage check before the first send flips the stage (which sent the text twice).
+const sendingOutreach = new Set();
 async function sendWhatsAppOutreachTo(c, j, media) {
   if (c.dnc) throw new Error('candidate opted out (do-not-contact)');
   if (c.wa.stage !== 'new') throw new Error('already contacted on WhatsApp');
-  const text = outreachText(c, j), jid2 = normPhone(c.phone) + '@c.us';
-  const ok = await client.isRegisteredUser(jid2);
-  if (!ok) throw new Error('not on WhatsApp');
-  await client.sendMessage(jid2, text);
-  if (media) { await new Promise(r => setTimeout(r, 600)); await client.sendMessage(jid2, media, { caption: `📄 ${j.title} — Job Description`, sendMediaAsDocument: true }); }
-  c.wa.stage = 'outreach'; c.wa.outreachSentAt = Date.now(); c.wa.transcript.push({ from: 'system', text, ts: now() });
-  if (media) c.wa.transcript.push({ from: 'system', text: `📄 [Sent JD attachment: ${j.jdFileName || j.jdFile}]`, ts: now() });
-  // Tappable interest poll (they can also just reply with text).
+  if (sendingOutreach.has(c.id)) throw new Error('outreach already in progress');
+  sendingOutreach.add(c.id);                              // synchronous lock — no await before this
+  // Flip the stage immediately too, so any concurrent caller fails the stage check above right away.
+  c.wa.stage = 'outreach'; c.wa.outreachSentAt = Date.now();
   try {
-    const ip = pollForStage('outreach', c, j);
-    await new Promise(r => setTimeout(r, 600));
-    const pm = await client.sendMessage(jid2, new Poll(ip.name, ip.options, { allowMultipleAnswers: false }));
-    c.wa.chatId = c.wa.chatId || jid2; c.wa.activePoll = 'outreach'; c.wa.activePollMsgId = pm && pm.id ? pm.id._serialized : null;
-  } catch (e) { log('Interest poll failed for ' + c.name + ': ' + e.message); }
-  log(`  ✓ Sent to ${c.name} (+${normPhone(c.phone)})`);
+    const text = outreachText(c, j), jid2 = normPhone(c.phone) + '@c.us';
+    const ok = await waIsRegistered(jid2);
+    if (!ok) { c.wa.stage = 'new'; throw new Error('not on WhatsApp'); }   // roll back so it can be retried
+    await waSend(jid2, text);
+    if (media) { await new Promise(r => setTimeout(r, 600)); await waSend(jid2, media, { caption: `📄 ${j.title} — Job Description`, sendMediaAsDocument: true }); }
+    c.wa.transcript.push({ from: 'system', text, ts: now() });
+    if (media) c.wa.transcript.push({ from: 'system', text: `📄 [Sent JD attachment: ${j.jdFileName || j.jdFile}]`, ts: now() });
+    // Tappable interest poll (they can also just reply with text).
+    try {
+      const ip = pollForStage('outreach', c, j);
+      await new Promise(r => setTimeout(r, 600));
+      const pm = await waSend(jid2, new Poll(ip.name, ip.options, { allowMultipleAnswers: false }));
+      c.wa.chatId = c.wa.chatId || jid2; c.wa.activePoll = 'outreach'; c.wa.activePollMsgId = pm && pm.id ? pm.id._serialized : null;
+      // Mark "now" as processed so the catch-up sweep never replays this phone number's OLDER chat
+      // history (a prior conversation, a different candidate record, anything predating this outreach)
+      // as if it were a fresh reply to what we just sent.
+      c.wa.lastProcessedTs = Date.now();
+    } catch (e) { log('Interest poll failed for ' + c.name + ': ' + e.message); }
+    log(`  ✓ Sent to ${c.name} (+${normPhone(c.phone)})`);
+  } finally {
+    sendingOutreach.delete(c.id);
+  }
 }
 function loadJDMedia(j) { if (j && j.jdFile) { try { return MessageMedia.fromFilePath(path.join(UP_DIR, j.jdFile)); } catch (e) { log('JD file load failed: ' + e.message); } } return null; }
 
@@ -1525,7 +1807,9 @@ app.post('/api/company', (req, res) => { db.company = (req.body.company || '').t
 
 app.post('/api/jobs', (req, res) => {
   const b = req.body;
-  const j = db.jobs.find(x => x.id === b.id) || { id: uid(), createdAt: now() };
+  const existing = db.jobs.find(x => x.id === b.id);
+  const isNewJob = !existing;
+  const j = existing || { id: uid(), createdAt: now() };
   Object.assign(j, { title: b.title, department: b.department, location: b.location, jd: b.jd, experience: b.experience, workingDays: +b.workingDays || 5, remote: b.remote || 'No', skills: b.skills, timeline: b.timeline });
   j.maxNoticeDays = (b.maxNoticeDays === '' || b.maxNoticeDays === null || b.maxNoticeDays === undefined) ? null : Number(b.maxNoticeDays);
   j.skillQuestions = Array.isArray(b.skillQuestions) ? b.skillQuestions.map(s => (s || '').trim()).filter(Boolean) : [];
@@ -1536,12 +1820,43 @@ app.post('/api/jobs', (req, res) => {
   }
   if (b.removeJdFile) { if (j.jdFile) { try { fs.unlinkSync(path.join(UP_DIR, j.jdFile)); } catch (e) {} } j.jdFile = null; j.jdFileName = null; }
   if (!db.jobs.includes(j)) db.jobs.unshift(j);
-  save(); res.json(j);
+  save();
+  const autoAdded = isNewJob ? autoMatchAwaitingCandidates(j) : [];
+  res.json(Object.assign({}, j, { autoAdded: autoAdded.length }));
 });
 app.delete('/api/jobs/:id', (req, res) => { db.jobs = db.jobs.filter(j => j.id !== req.params.id); db.candidates = db.candidates.filter(c => c.jobId !== req.params.id); save(); res.json({ ok: true }); });
 
 function newChannel() { return { stage: 'new', transcript: [], answers: {}, flags: [], pending: null, chatId: null, skillIdx: 0 }; }
-function mkCand(jobId, b) { return { id: uid(), jobId, name: b.name, email: b.email, phone: b.phone, targetLocation: b.targetLocation, createdAt: now(), wa: newChannel(), em: newChannel() }; }
+function mkCand(jobId, b) { return { id: uid(), jobId, name: b.name, email: b.email, phone: fmtPhone(b.phone), targetLocation: b.targetLocation, createdAt: now(), wa: newChannel(), em: newChannel() }; }
+// Does a candidate's stated preferred location(s) cover this job's city?
+function locationMatches(preferred, jobLoc) {
+  const l = (jobLoc || '').toLowerCase().trim();
+  if (!l) return false;
+  const p = (preferred || '').toLowerCase();
+  if (/any location|relocat|anywhere/.test(p)) return true;                 // open to relocating → matches anywhere
+  return p.split(/[,/]|\band\b|&/).map(s => s.trim()).some(city => city && (city === l || city.includes(l) || l.includes(city)));
+}
+// When a NEW job is created, auto-pull anyone parked in "awaiting_role" whose desired role (same title)
+// and preferred city match it. The pulled-in copy is tagged autoAdded so it's highlighted for the recruiter.
+function autoMatchAwaitingCandidates(newJob) {
+  if (!newJob || !newJob.title || !newJob.location) return [];
+  const norm = s => (s || '').trim().toLowerCase();
+  const added = [];
+  for (const c of db.candidates.slice()) {
+    if (c.wa.stage !== 'awaiting_role') continue;
+    const origJob = jobOf(c);
+    if (!origJob || norm(origJob.title) !== norm(newJob.title)) continue;
+    if (!locationMatches(c.wa.answers.preferredLocation, newJob.location)) continue;
+    if (db.candidates.some(x => x.jobId === newJob.id && last10(x.phone) === last10(c.phone))) continue;   // already in this job
+    const nc = mkCand(newJob.id, { name: c.name, email: c.email, phone: c.phone, targetLocation: newJob.location });
+    nc.autoAdded = true;
+    nc.autoAddedFrom = { title: origJob.title, location: origJob.location, preferred: c.wa.answers.preferredLocation };
+    db.candidates.push(nc);
+    added.push(nc);
+  }
+  if (added.length) { save(); log(`✨ Auto-added ${added.length} candidate(s) to "${newJob.title}" (${newJob.location}) from the awaiting-role pool.`); }
+  return added;
+}
 app.post('/api/candidates', (req, res) => { if (!req.body.name) return res.status(400).json({ error: 'name required' }); const c = mkCand(req.body.jobId, req.body); db.candidates.push(c); save(); res.json(c); });
 // Edit a candidate's details at any stage (name / email / phone / target location).
 app.patch('/api/candidates/:id', (req, res) => {
@@ -1550,7 +1865,7 @@ app.patch('/api/candidates/:id', (req, res) => {
   const b = req.body;
   if (b.name !== undefined) { if (!b.name.trim()) return res.status(400).json({ error: 'Name cannot be empty.' }); c.name = b.name.trim(); }
   if (b.email !== undefined) c.email = (b.email || '').trim();
-  if (b.phone !== undefined) c.phone = (b.phone || '').trim();
+  if (b.phone !== undefined) c.phone = fmtPhone(b.phone);
   if (b.targetLocation !== undefined) c.targetLocation = (b.targetLocation || '').trim();
   if (b.dnc !== undefined) c.dnc = !!b.dnc;
   save(); res.json(c);
@@ -1570,14 +1885,19 @@ async function retriggerCandidate(c) {
     // Conversation had ended (declined / rejected) — re-open with a fresh interest check, keeping prior answers for context.
     ch.stage = 'outreach';
     text = `Hi ${c.name}! 👋 Just checking back in — are you open to exploring the *${j ? j.title : ''}* opportunity now? 😊`;
-  } else if (ch.stage === 'skills') {
-    const qs = (j && j.skillQuestions || []).filter(q => q && q.trim());
-    text = qs[ch.skillIdx || 0] || 'Could you share a bit more about your experience? 📝';
+    ch.transcript.push({ from: 'system', text, ts: now() });
+    await sendRepliesWA(c, [text]);
   } else {
-    text = stagePrompt(ch.stage, c, j) || `Hi ${c.name}! 👋 Just following up — whenever you get a chance, I'd love to hear back from you. 😊`;
+    // Mid-conversation — nudge them to reply to whatever we last actually sent, word-for-word (not a regenerated prompt).
+    const lastSystemMsg = [...ch.transcript].reverse().find(t => t.from === 'system');
+    text = lastSystemMsg ? lastSystemMsg.text : (stagePrompt(ch.stage, c, j) || `Hi ${c.name}! 👋 Just following up — whenever you get a chance, I'd love to hear back from you. 😊`);
+    const lead = `Hi ${c.name}! 👋 Just following up on this —`;
+    ch.transcript.push({ from: 'system', text: lead, ts: now() });
+    await sendRepliesWA(c, [lead]);
+    // Resend the exact original question — via its native poll if it was one, or as plain text otherwise.
+    ch.transcript.push({ from: 'system', text, ts: now() });
+    await sendRepliesWA(c, [text]);
   }
-  ch.transcript.push({ from: 'system', text, ts: now() });
-  await sendRepliesWA(c, [text]);
   save();
   return ch.stage;
 }
@@ -1607,13 +1927,15 @@ app.post('/api/run/:jobId', async (req, res) => { try { res.json(await runJob(re
 app.post('/api/run-one/:candId', async (req, res) => { try { res.json(await runJobOne(req.params.candId)); } catch (e) { res.status(400).json({ error: e.message }); } });
 app.post('/api/run-email-one/:candId', async (req, res) => { try { res.json(await runEmailOne(req.params.candId)); } catch (e) { res.status(400).json({ error: e.message }); } });
 app.post('/api/flags/resolve', (req, res) => { const c = db.candidates.find(x => x.id === req.body.candId); const ch = c ? c[req.body.channel === 'em' ? 'em' : 'wa'] : null; if (ch && ch.flags[req.body.idx]) ch.flags[req.body.idx].resolved = true; save(); res.json({ ok: true }); });
+// Resolve every unresolved flag on a candidate (both channels) in one click.
+app.post('/api/flags/resolve-all', (req, res) => { const c = db.candidates.find(x => x.id === req.body.candId); if (!c) return res.status(404).json({ error: 'not found' }); [c.wa, c.em].forEach(ch => { if (ch && ch.flags) ch.flags.forEach(f => f.resolved = true); }); save(); res.json({ ok: true }); });
 // Manual recruiter reply into a conversation
 app.post('/api/send', async (req, res) => {
   try {
     if (waStatus !== 'ready') throw new Error('WhatsApp not connected');
     const c = db.candidates.find(x => x.id === req.body.candId); if (!c) throw new Error('candidate not found');
     const to = c.wa.chatId || (normPhone(c.phone) + '@c.us');
-    await client.sendMessage(to, req.body.text);
+    await waSend(to, req.body.text);
     c.wa.transcript.push({ from: 'system', text: req.body.text, ts: now(), manual: true }); save();
     res.json({ ok: true });
   } catch (e) { res.status(400).json({ error: e.message }); }
