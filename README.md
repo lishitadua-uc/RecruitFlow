@@ -25,7 +25,17 @@ You do **not** need Node.js, Git, or any AI tool to run this. Just download and 
 
 ---
 
-## ▶ Windows / Linux
+## ▶ Windows (the easy way)
+
+1. Install **Node.js 22+** from https://nodejs.org (download the **LTS** Windows Installer
+   `.msi`, run it — takes a minute). *This one-time step is required; Windows can't auto-install it.*
+2. Download the ZIP (green **`Code`** button → **Download ZIP**) and unzip it.
+3. Open the unzipped folder and **double-click `start.bat`**.
+   - First run installs everything automatically (~2–3 min) and opens **http://localhost:3000**.
+   - If Windows SmartScreen warns, click **More info → Run anyway** (one time).
+4. Keep the black window open while you use it. Re-open any time by double-clicking `start.bat`.
+
+## ▶ Linux / manual (any OS)
 
 1. Install **Node.js 22+** from https://nodejs.org
 2. Download the ZIP (green **`Code`** button → **Download ZIP**) and unzip it — or clone:
