@@ -1400,7 +1400,13 @@ client.on('qr', async qr => { clearWatchdog(); waStatus = 'qr'; qrDataUrl = awai
 client.on('authenticated', () => { waStatus = 'authenticated'; });
 client.on('auth_failure', m => { clearWatchdog(); waStatus = 'auth_failure'; log('Auth failure: ' + m); });
 client.on('ready', () => { clearWatchdog(); waStatus = 'ready'; qrDataUrl = null; waInfo = client.info ? client.info.wid.user : null; log('WhatsApp READY. Connected as +' + (waInfo || '?')); setTimeout(() => catchUpWhatsApp(), 4000); });
-client.on('disconnected', r => { waStatus = 'disconnected'; log('Disconnected: ' + r + ' — attempting to reconnect.'); recoverWhatsApp(); });
+client.on('disconnected', r => {
+  waStatus = 'disconnected'; log('Disconnected: ' + r + ' — attempting to reconnect.');
+  // A LOGOUT / CONFLICT means the saved session is dead — reusing it just loops QR codes forever.
+  // Mark it for a wipe on the next startup (after Chrome locks are released), so the restart links clean.
+  if (/logout|conflict|unpaired/i.test(String(r))) { try { fs.writeFileSync(RESET_MARKER, String(r)); } catch (e) {} log('  → session invalid; will reset and show a fresh QR on restart.'); }
+  recoverWhatsApp();
+});
 // Safety net: sweep for any missed messages every 2 minutes, independent of reconnect events —
 // closes the gap for brief hiccups that don't trigger a full disconnect/reconnect cycle.
 if (!process.env.RF_TEST) setInterval(() => { if (waStatus === 'ready') catchUpWhatsApp().catch(() => {}); }, 2 * 60 * 1000);
@@ -1417,8 +1423,18 @@ function clearChromeLocks() {
     walk(base);
   } catch (e) {}
 }
+// Marker file: when present at startup, the saved WhatsApp session is wiped for a clean re-link.
+const RESET_MARKER = path.join(__dirname, '.reset_session');
+function clearAuthSession() {
+  for (const d of ['.wwebjs_auth', '.wwebjs_cache']) { try { fs.rmSync(path.join(__dirname, d), { recursive: true, force: true }); } catch (e) {} }
+}
 // Run a guaranteed-clean WhatsApp startup: clear any leftover Chrome + locks, then initialize.
-function startWhatsApp() { killStaleChrome(); clearChromeLocks(); log('Starting WhatsApp client…'); client.initialize(); armWatchdog(); }
+function startWhatsApp() {
+  killStaleChrome(); clearChromeLocks();
+  // If a prior LOGOUT flagged the session for reset, wipe it now (Chrome is dead → files unlocked).
+  if (fs.existsSync(RESET_MARKER)) { clearAuthSession(); try { fs.unlinkSync(RESET_MARKER); } catch (e) {} log('🧹 Cleared the logged-out WhatsApp session — scan the fresh QR to reconnect.'); }
+  log('Starting WhatsApp client…'); client.initialize(); armWatchdog();
+}
 let waWatchdog = null, recovering = false;
 function clearWatchdog() { if (waWatchdog) { clearTimeout(waWatchdog); waWatchdog = null; } }
 function armWatchdog() {
