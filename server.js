@@ -1388,12 +1388,30 @@ if (!process.env.RF_TEST) setInterval(() => { pollEmail().catch(() => {}); }, 20
 /* ---------------- WhatsApp client ---------------- */
 let waStatus = 'starting', qrDataUrl = null, waInfo = null;
 
+// Reuse a Chrome/Chromium already on the machine so first run doesn't have to download one
+// (huge first-run speedup). Falls back to the bundled Chromium if none is found.
+function findSystemChrome() {
+  if (process.env.CHROME_PATH && fs.existsSync(process.env.CHROME_PATH)) return process.env.CHROME_PATH;
+  const candidates = [
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    process.env.LOCALAPPDATA ? process.env.LOCALAPPDATA + '\\Google\\Chrome\\Application\\chrome.exe' : null,
+    '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium-browser', '/usr/bin/chromium',
+  ].filter(Boolean);
+  for (const p of candidates) { try { if (fs.existsSync(p)) return p; } catch (e) {} }
+  return null;
+}
+const CHROME_EXE = findSystemChrome();
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: path.join(__dirname, '.wwebjs_auth') }),
   // Pin + cache the WhatsApp Web build so startup doesn't re-fetch it every launch (faster + more stable).
   webVersionCache: { type: 'local', path: path.join(__dirname, '.wwebjs_cache') },
   puppeteer: {
     headless: true,
+    ...(CHROME_EXE ? { executablePath: CHROME_EXE } : {}),
     args: [
       '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
       // Trim cold-boot time: skip GPU, extensions, background network chatter, first-run UI.
@@ -1447,7 +1465,7 @@ function startWhatsApp() {
   killStaleChrome(); clearChromeLocks();
   // If a prior LOGOUT flagged the session for reset, wipe it now (Chrome is dead → files unlocked).
   if (fs.existsSync(RESET_MARKER)) { clearAuthSession(); try { fs.unlinkSync(RESET_MARKER); } catch (e) {} log('🧹 Cleared the logged-out WhatsApp session — scan the fresh QR to reconnect.'); }
-  log('Starting WhatsApp client…'); client.initialize(); armWatchdog();
+  log('Starting WhatsApp client…' + (CHROME_EXE ? ' (using your installed Chrome — fast start)' : ' (using bundled Chromium)')); client.initialize(); armWatchdog();
 }
 let waWatchdog = null, recovering = false;
 function clearWatchdog() { if (waWatchdog) { clearTimeout(waWatchdog); waWatchdog = null; } }

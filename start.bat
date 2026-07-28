@@ -1,48 +1,69 @@
 @echo off
 REM ============================================================
 REM  RecruitFlow - one-click launcher (Windows)
-REM  Double-click this file to start RecruitFlow on your laptop.
-REM  It installs what it needs the first time (one-time, ~2 min).
+REM  Shows each step. Reuses installed Chrome to skip a big
+REM  one-time download.
 REM ============================================================
 cd /d "%~dp0"
 title RecruitFlow
-echo Starting RecruitFlow...
-echo.
+cls
+echo ============================================================
+echo    RecruitFlow - starting up
+echo ============================================================
 
-REM ---- 1. Make sure Node.js is available ----
+REM ---- [1/4] Node.js ----
+echo.
+echo [1/4] Checking Node.js...
 where node >nul 2>nul
 if errorlevel 1 (
-  echo Node.js is not installed.
-  echo.
-  echo Please install Node.js 22 from https://nodejs.org
-  echo  - Download the "LTS" Windows Installer ^(.msi^), run it, then double-click this file again.
-  echo.
+  echo       Node.js is not installed.
+  echo       Please install Node.js 22 ^(LTS^) from https://nodejs.org, then run this again.
   start "" "https://nodejs.org/en/download"
   pause
   exit /b 1
 )
-for /f "delims=" %%v in ('node -v') do echo Using Node: %%v
+for /f "delims=" %%v in ('node -v') do echo       OK Node %%v
 
-REM ---- 2. Install dependencies the first time ----
+REM ---- [2/4] Reuse installed Chrome (skips a ~200MB download) ----
+echo.
+echo [2/4] Looking for Google Chrome...
+set "CHROME_PATH="
+if exist "%ProgramFiles%\Google\Chrome\Application\chrome.exe" set "CHROME_PATH=%ProgramFiles%\Google\Chrome\Application\chrome.exe"
+if exist "%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe" set "CHROME_PATH=%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"
+if exist "%LocalAppData%\Google\Chrome\Application\chrome.exe" set "CHROME_PATH=%LocalAppData%\Google\Chrome\Application\chrome.exe"
+if defined CHROME_PATH (
+  set "PUPPETEER_SKIP_DOWNLOAD=true"
+  echo       OK Found Chrome - reusing it ^(skips a big one-time download, much faster^).
+) else (
+  echo       ! Chrome not found - will download a browser once ^(~200MB; the slow bit^).
+  echo         Tip: install Google Chrome first to make this near-instant.
+)
+
+REM ---- [3/4] Install components ----
+echo.
+echo [3/4] Installing app components... ^(first run only; watch the progress below^)
 if not exist node_modules (
-  echo Installing app components ^(one-time, downloads a headless browser - a few min^)...
-  call npm install --no-audit --no-fund
+  call npm install --no-audit --no-fund --prefer-offline --loglevel=error
   if errorlevel 1 (
     echo.
-    echo Install failed - check your internet connection and try again.
+    echo       Install failed - check your internet and run this again.
     pause
     exit /b 1
   )
+  echo       OK Components ready.
+) else (
+  echo       OK Already installed.
 )
 
-REM ---- 3. Start the app and open the dashboard ----
+REM ---- [4/4] Launch ----
 echo.
-echo Launching dashboard... a browser tab will open at http://localhost:3000
+echo [4/4] Launching dashboard...
 start "" "http://localhost:3000"
 echo.
 echo ============================================================
-echo  RecruitFlow is running. Keep this window OPEN while you use it.
-echo  Close this window (or press Ctrl+C) to stop RecruitFlow.
+echo   RecruitFlow is running. Click the WhatsApp status and scan
+echo   the QR (WhatsApp - Settings - Linked Devices - Link a Device).
+echo   Keep this window OPEN. Close it (or Ctrl+C) to stop.
 echo ============================================================
 node server.js
 pause
