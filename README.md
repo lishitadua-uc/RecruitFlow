@@ -14,13 +14,18 @@ No server, no cloud, no login. Your data stays on your machine.
 1. **Download the project**
    - On this page, click the green **`Code`** button → **`Download ZIP`**.
    - Unzip it (double-click the downloaded file).
-2. Open the unzipped folder and start it. **The first time, do NOT just double-click** — macOS
-   silently blocks downloaded scripts. Instead:
-   - **Right-click** (or Control-click) `start.command` → **Open** → click **Open** again in the
-     warning box. That one-time approval unblocks it; after that, double-click works forever.
-   - If it opens in a text editor instead, right-click → **Open With → Terminal**.
-   - Still stuck? Open **Terminal**, type `bash ` (with a space), drag `start.command` into the
-     window, and press **Enter**. This always works.
+2. Open the unzipped folder and start it. macOS blocks downloaded scripts, and you may see a
+   popup **"start.command Not Opened — Apple could not verify…"**. That's expected (the app
+   just isn't Apple-signed). **Click `Done` — never `Move to Bin` (that deletes it).** Then:
+
+   **Easiest — Terminal (always works, no popup):** open **Terminal** (Cmd-Space → "Terminal"),
+   type `bash ` (with a space), drag `start.command` into the window, press **Enter**.
+
+   **Or "Open Anyway":** System Settings → **Privacy & Security** → scroll to Security → click
+   **Open Anyway** next to "start.command was blocked" → confirm → then double-click it.
+
+   **Clear it for good (whole team tip):** in Terminal, type `xattr -cr ` (with a space), drag
+   the unzipped **folder** in, press Enter. After that `start.command` double-clicks normally.
 3. The first run sets everything up (**~30–60s if Google Chrome is installed**; longer only if it
    has to download a browser). You'll see numbered steps `[1/4]…[4/4]`. A browser tab opens at
    **http://localhost:3000**.
