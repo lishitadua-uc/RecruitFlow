@@ -349,7 +349,7 @@ function openConnect(){
     let body;
     if(STATUS.waStatus==='ready') body=`<div class="qrbox"><div style="font-size:40px">✅</div><h2>Connected</h2><p class="modalsub">Sending from <b>+${esc(STATUS.connectedAs||'')}</b>. You're ready to RUN jobs.</p></div>`;
     else if(STATUS.qr) body=`<div class="qrbox"><img src="${STATUS.qr}"><div><b>Scan to connect your WhatsApp</b></div><p class="modalsub" style="max-width:380px">On your phone: <b>WhatsApp → Settings → Linked Devices → Link a Device</b>, then point your camera at this code. (Refreshes automatically.)</p></div>`;
-    else body=`<div class="qrbox"><div style="font-size:34px">⏳</div><h2>Starting WhatsApp…</h2><p class="modalsub">Generating your QR code, one moment.</p></div>`;
+    else body=`<div class="qrbox"><div style="font-size:34px">⏳</div><h2>Starting WhatsApp…</h2><p class="modalsub" style="max-width:400px">Generating your QR code — this usually takes 10–30 seconds.<br><br><b>First time on this laptop?</b> It first downloads a small browser in the background, so the very first QR can take a few minutes. Keep this window open and it'll appear automatically. Make sure you're on a stable network (a corporate VPN can block WhatsApp Web).</p></div>`;
     o.innerHTML=`<div class="overlay" onclick="if(event.target===this)closeOverlay()"><div class="modal"><div class="between"><h2>WhatsApp connection</h2><button class="x" onclick="closeOverlay()">×</button></div>
       <div class="banner">⚠️ This drives your <b>personal</b> WhatsApp number, which is against WhatsApp's Terms — it can get the number banned. Use at your own risk.</div>
       ${body}

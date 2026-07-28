@@ -1388,7 +1388,21 @@ if (!process.env.RF_TEST) setInterval(() => { pollEmail().catch(() => {}); }, 20
 /* ---------------- WhatsApp client ---------------- */
 let waStatus = 'starting', qrDataUrl = null, waInfo = null;
 
-const client = new Client({ authStrategy: new LocalAuth({ dataPath: path.join(__dirname, '.wwebjs_auth') }), puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] } });
+const client = new Client({
+  authStrategy: new LocalAuth({ dataPath: path.join(__dirname, '.wwebjs_auth') }),
+  // Pin + cache the WhatsApp Web build so startup doesn't re-fetch it every launch (faster + more stable).
+  webVersionCache: { type: 'local', path: path.join(__dirname, '.wwebjs_cache') },
+  puppeteer: {
+    headless: true,
+    args: [
+      '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+      // Trim cold-boot time: skip GPU, extensions, background network chatter, first-run UI.
+      '--disable-gpu', '--disable-extensions', '--disable-background-networking',
+      '--disable-default-apps', '--disable-sync', '--no-first-run', '--no-default-browser-check',
+      '--disable-features=TranslateUI', '--mute-audio'
+    ]
+  }
+});
 // These Puppeteer-level errors mean the underlying Chrome page/frame has died — whatsapp-web.js
 // doesn't fire 'disconnected' for this, and waStatus stays stuck at "ready" forever, so every send
 // silently (or visibly) fails until someone notices and restarts by hand. Catch it ourselves instead.
