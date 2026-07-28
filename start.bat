@@ -43,7 +43,7 @@ REM ---- [3/4] Install components ----
 echo.
 echo [3/4] Installing app components... ^(first run only; watch the progress below^)
 if not exist node_modules (
-  call npm install --no-audit --no-fund --prefer-offline --loglevel=error
+  call npm install --no-audit --no-fund --prefer-offline --loglevel=error --cache ".\.npm-cache"
   if errorlevel 1 (
     echo.
     echo       Install failed - check your internet and run this again.

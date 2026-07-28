@@ -48,7 +48,9 @@ fi
 echo ""
 echo "[3/4] Installing app components…"
 if [ ! -d node_modules ]; then
-  ( "$NPM_BIN" install --no-audit --no-fund --prefer-offline --loglevel=error > /tmp/rf-install.log 2>&1 ) &
+  # Use a project-local npm cache so a root-owned/broken ~/.npm (from a past `sudo npm`) can't
+  # block the install with an EACCES permission error.
+  ( "$NPM_BIN" install --no-audit --no-fund --prefer-offline --loglevel=error --cache "$(pwd)/.npm-cache" > /tmp/rf-install.log 2>&1 ) &
   IPID=$!
   SECS=0
   while kill -0 "$IPID" 2>/dev/null; do

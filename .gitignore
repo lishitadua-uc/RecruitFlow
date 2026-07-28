@@ -6,3 +6,4 @@ server.log
 uploads/
 *.log
 .DS_Store
+.npm-cache/
