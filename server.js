@@ -891,8 +891,117 @@ function log(m) { const line = `[${new Date().toLocaleTimeString()}] ${m}`; logs
 
 /* ---------------- Settings + backfill ---------------- */
 db.settings = db.settings || {};
+if (!db.settings.sheetId) db.settings.sheetId = '1O5V9k5hVzQ_1gUIuFwHIQok-fZsBllWaQZSyOuyUghw';
 db.candidates.forEach(c => { if (!c.em) c.em = newChannel(); if (!c.wa) c.wa = newChannel(); });
 const stripMd = t => (t || '').replace(/\*/g, '');
+
+/* ---------------- Google Sheet integration (source of candidates + write-back) ---------------- */
+const SHEET_TAB = 'Reachouts to be done';
+const SHEET_SUMMARY_TAB = 'Conversation Summary';
+const SA_KEY_PATH = path.join(__dirname, 'google-service-account.json');
+let _sheetsApi = null;
+async function sheetsApi() {
+  if (_sheetsApi) return _sheetsApi;
+  if (!fs.existsSync(SA_KEY_PATH) || !db.settings.sheetId) return null;
+  const { google } = require('googleapis');
+  const auth = new google.auth.GoogleAuth({ keyFile: SA_KEY_PATH, scopes: ['https://www.googleapis.com/auth/spreadsheets'] });
+  _sheetsApi = google.sheets({ version: 'v4', auth: await auth.getClient() });
+  return _sheetsApi;
+}
+const colLetter = i => { let s = ''; i++; while (i > 0) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; };
+// Read the tab; return { header:[], rows:[[...]], idx:{colName:index} }.
+async function readSheetTab() {
+  const api = await sheetsApi(); if (!api) throw new Error('Google Sheet not connected (missing key or sheet id).');
+  const r = await api.spreadsheets.values.get({ spreadsheetId: db.settings.sheetId, range: SHEET_TAB });
+  const rows = r.data.values || []; const header = rows[0] || [];
+  const idx = {}; header.forEach((h, i) => idx[h] = i);
+  return { header, rows, idx };
+}
+// Map a candidate's collected answers onto the sheet's write-back columns.
+function sheetWriteMap(c) {
+  const a = c.wa.answers || {};
+  return {
+    interested: a.interested || '',
+    not_interested_reason: a.declineReason || '',
+    current_location_confirmed: a.currentLocation || '',
+    current_ctc_breakup: a.currentCTC || '',
+    open_to_city: a.openToCity || '',
+    notice_period: a.noticePeriod || '',
+    resume_status: a.resume || '',
+    whatsapp_status: STAGE_LABEL[c.wa.stage] || c.wa.stage,
+    last_message_sent_at: c.wa.lastMsgSentAt || '',
+    last_candidate_reply_at: c.wa.lastReplyAt || '',
+    follow_up_count: String(c.wa.nudgeCount || 0),
+  };
+}
+// Write a candidate's answers back to their row in the sheet (only if it came from the sheet).
+async function writeCandidateToSheet(c) {
+  try {
+    if (!c || !c.sheetRow) return;
+    const api = await sheetsApi(); if (!api) return;
+    const idx = db.settings._sheetIdx; if (!idx) return;
+    const map = sheetWriteMap(c);
+    const data = [];
+    for (const [col, val] of Object.entries(map)) {
+      if (idx[col] == null) continue;
+      data.push({ range: `${SHEET_TAB}!${colLetter(idx[col])}${c.sheetRow}`, values: [[val]] });
+    }
+    if (data.length) await api.spreadsheets.values.batchUpdate({ spreadsheetId: db.settings.sheetId, requestBody: { valueInputOption: 'RAW', data } });
+    updateSummaryTab().catch(() => {});
+  } catch (e) { log('Sheet write-back failed for ' + (c && c.name) + ': ' + e.message); }
+}
+// Ensure a job exists for this role+city (auto-derived from the sheet — no manual job creation).
+function jobForRole(title, location, recruiterName) {
+  let j = db.jobs.find(x => (x.title || '').trim().toLowerCase() === (title || '').trim().toLowerCase() && (x.location || '').trim().toLowerCase() === (location || '').trim().toLowerCase());
+  if (!j) { j = { id: uid(), title: title || 'Role', location: location || '', workingDays: 6, remote: 'No', experience: '', skillQuestions: [], maxNoticeDays: null, recruiterName, fromSheet: true, createdAt: now() }; db.jobs.unshift(j); }
+  else if (recruiterName && !j.recruiterName) j.recruiterName = recruiterName;
+  return j;
+}
+// Pull Strong candidates from the sheet, auto-create their role+city, skip anyone contacted in the last 90 days.
+async function syncFromSheet() {
+  const { header, rows, idx } = await readSheetTab();
+  db.settings._sheetIdx = idx; db.settings._sheetHeader = header;
+  const need = ['name', 'phone', 'rating', 'level', 'city', 'recruiter_name'];
+  for (const k of need) if (idx[k] == null) throw new Error(`Sheet is missing a "${k}" column.`);
+  const NINETY = 90 * 24 * 60 * 60 * 1000;
+  let added = 0, skippedRecent = 0, skippedExisting = 0, notStrong = 0;
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i]; if (!row || !row.length) continue;
+    const rating = (row[idx.rating] || '').trim().toLowerCase();
+    if (rating !== 'strong') { notStrong++; continue; }
+    const rawPhone = (row[idx.phone] || '').toString().trim(); if (!rawPhone) continue;
+    const phone = fmtPhone(rawPhone);
+    const sheetRow = i + 1;
+    // 90-day guardrail: skip if we already messaged this candidate on WhatsApp within 90 days.
+    const lastContact = row[idx.last_message_sent_at] || row[idx.last_candidate_reply_at] || '';
+    const lastMs = lastContact ? Date.parse(lastContact) : 0;
+    if (lastMs && (Date.now() - lastMs) < NINETY) { skippedRecent++; continue; }
+    const existing = db.candidates.find(x => last10(x.phone) === last10(phone) && x.fromSheet);
+    if (existing) { existing.sheetRow = sheetRow; skippedExisting++; continue; }
+    const j = jobForRole(row[idx.level], row[idx.city], row[idx.recruiter_name]);
+    const c = mkCand(j.id, { name: row[idx.name], email: '', phone, targetLocation: row[idx.city] });
+    c.fromSheet = true; c.sheetRow = sheetRow; c.recruiterName = row[idx.recruiter_name] || '';
+    db.candidates.push(c); added++;
+  }
+  save();
+  log(`📥 Sheet sync: ${added} added, ${skippedRecent} skipped (contacted <90d), ${skippedExisting} already imported.`);
+  return { added, skippedRecent, skippedExisting, notStrong };
+}
+// Rebuild the "Conversation Summary" tab: one row per sheet candidate with every answer + status.
+async function updateSummaryTab() {
+  const api = await sheetsApi(); if (!api) return;
+  const meta = await api.spreadsheets.get({ spreadsheetId: db.settings.sheetId });
+  const has = meta.data.sheets.some(s => s.properties.title === SHEET_SUMMARY_TAB);
+  if (!has) await api.spreadsheets.batchUpdate({ spreadsheetId: db.settings.sheetId, requestBody: { requests: [{ addSheet: { properties: { title: SHEET_SUMMARY_TAB } } }] } });
+  const HED = ['Candidate', 'Phone', 'Recruiter', 'Level', 'City', 'Interested', 'Not-interested reason', 'Current location', 'Current CTC (fixed/var/ESOP)', 'Open to city', 'Notice period', 'Resume', 'Availability', 'Status', 'Follow-ups', 'Last reply'];
+  const list = db.candidates.filter(c => c.fromSheet);
+  const data = [HED];
+  for (const c of list) {
+    const a = c.wa.answers || {}, j = jobOf(c) || {};
+    data.push([c.name || '', c.phone || '', c.recruiterName || '', j.title || '', j.location || '', a.interested || '', a.declineReason || '', a.currentLocation || '', a.currentCTC || '', a.openToCity || '', a.noticePeriod || '', a.resume || '', a.availability || '', STAGE_LABEL[c.wa.stage] || c.wa.stage, String(c.wa.nudgeCount || 0), c.wa.lastReplyAt || '']);
+  }
+  await api.spreadsheets.values.update({ spreadsheetId: db.settings.sheetId, range: `${SHEET_SUMMARY_TAB}!A1`, valueInputOption: 'RAW', requestBody: { values: data } });
+}
 
 /* ---------------- Google Calendar (OAuth + auto-insert) ---------------- */
 const { google } = require('googleapis');
@@ -1609,10 +1718,12 @@ client.on('message', async msg => {
       return;
     }
     const useAI = aiReady() && !understood;   // rules first; AI only when rules can't parse
+    c.wa.lastReplyAt = now();
     const replies = useAI ? await aiProcess(c, c.wa, msg.body) : handleIncoming(c, c.wa, msg.body);
     await sendRepliesWA(c, replies);
-    if (replies && replies.length) log(`▶ Replied to ${c.name} → now [${STAGE_LABEL[c.wa.stage] || c.wa.stage}]`);
+    if (replies && replies.length) { c.wa.lastMsgSentAt = now(); log(`▶ Replied to ${c.name} → now [${STAGE_LABEL[c.wa.stage] || c.wa.stage}]`); }
     else log(`🤐 ${c.name}: message not relevant to recruitment — no reply sent.`);
+    if (c.fromSheet) writeCandidateToSheet(c);   // push answers back to the Google Sheet
   } catch (e) { log('handler error: ' + e.message); }
 });
 
@@ -1642,7 +1753,7 @@ client.on('vote_update', async (vote) => {
   } catch (e) { log('vote handler error: ' + e.message); }
 });
 if (!process.env.RF_TEST) startWhatsApp();
-module.exports = { detectInterest, detectComfort, detectExperience, detectRole, detectSlot, detectDay, handleIncoming, autoMatchAwaitingCandidates, locationMatches, mkCand, db };
+module.exports = { detectInterest, detectComfort, detectExperience, detectRole, detectSlot, detectDay, handleIncoming, autoMatchAwaitingCandidates, locationMatches, mkCand, syncFromSheet, writeCandidateToSheet, updateSummaryTab, readSheetTab, db };
 
 /* ---------------- Send outreach (RUN) ---------------- */
 // Send WhatsApp outreach to ONE candidate. Throws on failure. media is optional (loaded once by the caller).
@@ -1675,6 +1786,8 @@ async function sendWhatsAppOutreachTo(c, j, media) {
       // as if it were a fresh reply to what we just sent.
       c.wa.lastProcessedTs = Date.now();
     } catch (e) { log('Interest poll failed for ' + c.name + ': ' + e.message); }
+    c.wa.lastMsgSentAt = now();
+    if (c.fromSheet) writeCandidateToSheet(c);   // mark "contacted" + status in the sheet
     log(`  ✓ Sent to ${c.name} (+${normPhone(c.phone)})`);
   } finally {
     sendingOutreach.delete(c.id);
@@ -1903,6 +2016,10 @@ app.post('/api/candidates/:id/resurface', async (req, res) => {
 });
 app.post('/api/candidates/bulk', (req, res) => { const { jobId, rows } = req.body; let added = 0; (rows || []).forEach(r => { if (r.name) { db.candidates.push(mkCand(jobId, r)); added++; } }); save(); res.json({ added }); });
 app.delete('/api/candidates/:id', (req, res) => { db.candidates = db.candidates.filter(c => c.id !== req.params.id); save(); res.json({ ok: true }); });
+
+// Pull Strong candidates from the Google Sheet (auto-derives role+city; skips anyone contacted <90 days).
+app.post('/api/sheet/sync', async (req, res) => { try { res.json(await syncFromSheet()); } catch (e) { res.status(400).json({ error: e.message }); } });
+app.get('/api/sheet/status', (req, res) => res.json({ connected: fs.existsSync(SA_KEY_PATH) && !!db.settings.sheetId, sheetId: db.settings.sheetId || '' }));
 
 app.post('/api/run/:jobId', async (req, res) => { try { res.json(await runJob(req.params.jobId)); } catch (e) { res.status(400).json({ error: e.message }); } });
 // Per-candidate outreach

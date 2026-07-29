@@ -171,9 +171,16 @@ function chanToggle(){return `<div class="seg"><button class="${UI.channel!=='em
 
 /* ---- jobs ---- */
 function renderJobs(v){
-  v.innerHTML=`<div class="between"><div><h1>Jobs</h1><p class="sub">Create a role, add candidates, then RUN to send real WhatsApp outreach from your number.</p></div>
-    <button class="btn" onclick="jobForm()">+ New Job</button></div>
-    ${DB.jobs.length?`<div class="grid jobs">${DB.jobs.map(jobCard).join('')}</div>`:`<div class="empty"><div class="big">📋</div>No jobs yet. Create your first role.</div>`}`;
+  v.innerHTML=`<div class="between"><div><h1>Jobs</h1><p class="sub">Pull Strong candidates from your Google Sheet (role & city auto-filled), then RUN to send WhatsApp outreach.</p></div>
+    <div class="toolbar"><button class="btn" onclick="syncSheet()">📥 Sync from Sheet</button><button class="btn sec" onclick="jobForm()">+ New Job</button></div></div>
+    ${DB.jobs.length?`<div class="grid jobs">${DB.jobs.map(jobCard).join('')}</div>`:`<div class="empty"><div class="big">📋</div>No roles yet. Click <b>Sync from Sheet</b> to pull your Strong candidates.</div>`}`;
+}
+async function syncSheet(){
+  const btn=event&&event.target; if(btn){btn.disabled=true;btn.textContent='Syncing…';}
+  const r=await api('POST','/api/sheet/sync');
+  if(r.error){toast('⚠️ '+r.error);}
+  else toast(`📥 Synced: ${r.added} added, ${r.skippedRecent} skipped (contacted <90d), ${r.skippedExisting} already imported.`);
+  await reload(); render();
 }
 function jobCard(j){const list=candsOf(j.id);const sched=list.filter(c=>c.wa.stage==='scheduled'||(c.em&&c.em.stage==='scheduled')).length;
   return `<div class="card jobcard" onclick="openJob('${j.id}')"><div class="t">${esc(j.title)}</div>
