@@ -347,21 +347,25 @@ function outreachText(c, j) {
   const hasPdf = !!j.jdFile;
   return `Hi ${c.name}! 👋\n\nI am a UC recruit bot, reaching out from *${db.company}*. We came across your profile and think you could be a great fit for our *${j.title}* role${j.location ? ` based in ${j.location}` : ''}.\n\n` +
     (hasPdf ? `📄 I've attached the full job description below — do take a look.\n\n` : ``) +
-    `Are you open to exploring this opportunity? 😊 Feel free to ask me anything about the role.`;
+    `Are you open to exploring this opportunity? 😊 Feel free to ask me anything about the role.` +
+    numberedOptions('outreach', c, j);
+}
+// A numbered list of the stage's choices, appended to the question text (replaces WhatsApp polls).
+function numberedOptions(stage, c, j) {
+  const p = pollForStage(stage, c, j);
+  if (!p || !p.options || !p.options.length) return '';
+  return `\n\n${p.options.map((o, i) => `${i + 1}. ${o}`).join('\n')}\n\n_(reply with the number or your answer)_`;
 }
 function stagePrompt(stage, c, j) {
   switch (stage) {
     case 'location': return `Great! 🙌 To help us find the best fit for you, I just have a few quick, easy questions.\n\nFirst — what is your *current location*?`;
     case 'currentctc': return `Thanks! 😊 Could you share your *current CTC*? Please include the break-up — *fixed*, *variable* (if any) and *ESOPs* (if any).`;
-    case 'opentocity': return `Got it! And are you *open to ${j.location || 'the job location'}*?`;
-    case 'notice': return `Almost there! What's your *notice period*?`;
-    case 'keepprofile': return `Would it be okay if we kept your profile on file for future opportunities that might be a great match? 🙂\n\n• ${KEEPPROFILE_YES}\n• ${KEEPPROFILE_NO}`;
-    case 'resurface': return `Wonderful! 😊 Just so we reach out at the right time — when do you think you'll be open to exploring new opportunities?\n\n${RESURFACE_OPTS.map(o => '• ' + o).join('\n')}`;
+    case 'opentocity': return `Got it! And are you *open to ${j.location || 'the job location'}*?` + numberedOptions('opentocity', c, j);
+    case 'notice': return `Almost there! What's your *notice period*?` + numberedOptions('notice', c, j);
     case 'resume': return `One last thing — do you have an *updated resume* you'd like to share, in *PDF or Word* format? 📄 You can attach it right here. If not, just say *"skip"* and we'll move on.`;
-    case 'skills': return (j.skillQuestions || []).filter(q => q && q.trim())[(c.wa && c.wa.skillIdx) || 0] || '';
     case 'avail':
-    case 'availdate': return `Brilliant! 🎉 Let's set up your call. Which *date* works best for you?\n\n${availDateOptions().map(o => '• ' + o.label).join('\n')}\n\n(Reply with a date, e.g. "25 June".)`;
-    case 'availtime': return `Great! And which *time slot* suits you?\n\n${TIME_SLOTS.map(s => '• ' + s.label).join('\n')}\n\n(Reply with a slot, e.g. "3 PM".)`;
+    case 'availdate': return `Brilliant! 🎉 Let's set up your call. Which *date* works best for you?` + numberedOptions('availdate', c, j);
+    case 'availtime': return `Great! And which *time slot* suits you?` + numberedOptions('availtime', c, j);
   }
   return '';
 }
@@ -586,6 +590,14 @@ function handleIncoming(c, ch, text, skipPush) {
     // Irrelevant chatter → record it but send no reply.
     ch.ignoredCount = (ch.ignoredCount || 0) + 1;
     return finish(ch, out);   // out is empty → nothing sent
+  }
+
+  // Numbered-option shortcut: if the current stage offers a numbered list and the candidate replied with
+  // just a number (e.g. "2"), translate it to that option's answer before the stage handles it.
+  const _opt = pollForStage(ch.stage, c, j);
+  if (_opt && _opt.options && /^\s*\d{1,2}\s*$/.test(text)) {
+    const _i = parseInt(text, 10) - 1;
+    if (_i >= 0 && _i < _opt.options.length) text = voteToAnswer(ch.stage, _opt.options[_i]);
   }
 
   switch (ch.stage) {
@@ -1460,17 +1472,11 @@ async function sendRepliesWA(c, replies) {
   const ch = c.wa, j = jobOf(c), to = ch.chatId || (normPhone(c.phone) + '@c.us');
   // A pending sub-state (e.g. "what's your last working day?") always expects free text, even if the
   // underlying stage itself is normally poll-driven — don't re-fire that stage's poll while one is open.
-  const poll = ch.pending ? null : pollForStage(ch.stage, c, j);
-  // TEXT-FIRST: always send the question as plain text so the conversation can NEVER stall — even if
-  // WhatsApp rejects the poll (e.g. the "No LID for user" issue on some accounts). The poll is then a
-  // best-effort tappable bonus on top; a text reply advances the flow regardless of whether it sent.
+  // Text-only: questions carry their choices as a numbered list in the prompt text (no WhatsApp polls,
+  // which are unreliable on some accounts). Candidate replies with the number or the answer — both work.
   for (const r of (replies || [])) {
     try { await waSend(to, r); } catch (e) { log('WA send failed: ' + e.message); }
     await new Promise(r => setTimeout(r, 600));
-  }
-  if (poll && ch.activePoll !== ch.stage) {
-    try { const pm = await waSend(to, new Poll(poll.name, poll.options, { allowMultipleAnswers: false })); ch.activePoll = ch.stage; ch.activePollMsgId = pm && pm.id ? pm.id._serialized : null; save(); }
-    catch (e) { log('Poll (bonus) failed — text already sent, conversation continues: ' + e.message); }
   }
 }
 
