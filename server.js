@@ -1609,14 +1609,13 @@ function registerRecruiterSelfChat() {
     try {
       if (!msg.fromMe || waStatus !== 'ready') return;
       if (!db.recruiterPending) return;                 // only when we've asked the recruiter something
-      const id = msg.id && msg.id._serialized; if (id && recruiterSentIds.has(id)) return;   // skip our own nudges
+      const id = msg.id && msg.id._serialized; if (id && recruiterSentIds.has(id)) return;   // skip the bot's own nudges
       const chat = (msg.id && msg.id.remote) || msg.to || msg.from || '';
-      // Match the recruiter's self-chat: prefer the id we learned from our own nudge, else the plain <num>@c.us.
-      const target = db._recruiterChatId || (waInfo ? waInfo + '@c.us' : '');
-      const isSelfChat = (target && chat === target) || (waInfo && chat === waInfo + '@c.us');
-      if (!isSelfChat) return;
+      // A fromMe message going to a CANDIDATE chat is the bot talking to them — not a recruiter reply.
+      if (db.candidates.some(c => c.wa && c.wa.chatId === chat)) return;
       const text = (msg.body || '').trim(); if (!text || !looksLikeRecruiterReply(text)) return;
-      log(`👔 Recruiter self-chat reply: "${text}"`);
+      // Otherwise it's the recruiter typing in their own chat while we're waiting on them.
+      log(`👔 Recruiter reply (chat ${chat}): "${text}"`);
       await handleRecruiterReply(text);
     } catch (e) { log('recruiter self-chat error: ' + e.message); }
   });
