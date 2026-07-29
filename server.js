@@ -1798,8 +1798,15 @@ let waWatchdog = null, recovering = false;
 function clearWatchdog() { if (waWatchdog) { clearTimeout(waWatchdog); waWatchdog = null; } }
 function armWatchdog() {
   clearWatchdog();
-  // If WhatsApp doesn't reach 'ready' or show a QR within 90s, it's hung — recover.
-  waWatchdog = setTimeout(() => { if (waStatus !== 'ready' && waStatus !== 'qr') recoverWhatsApp(); }, 90000);
+  const startedAt = Date.now();
+  // Give it room to connect. 'authenticated' means it's syncing chats (can take minutes on a busy personal
+  // number) — don't kill it mid-sync or it loops forever. Allow up to 6 min authenticated; only then recover.
+  const tick = () => {
+    if (waStatus === 'ready' || waStatus === 'qr') return;
+    if (waStatus === 'authenticated' && Date.now() - startedAt < 6 * 60000) { waWatchdog = setTimeout(tick, 30000); return; }
+    recoverWhatsApp();
+  };
+  waWatchdog = setTimeout(tick, 4 * 60000);
 }
 async function recoverWhatsApp() {
   if (recovering) return; recovering = true;
