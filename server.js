@@ -1013,7 +1013,12 @@ async function sheetsApi() {
 const colLetter = i => { let s = ''; i++; while (i > 0) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; };
 // Read the tab; return { header:[], rows:[[...]], idx:{colName:index} }.
 async function readSheetTab() {
-  const api = await sheetsApi(); if (!api) throw new Error('Google Sheet not connected (missing key or sheet id).');
+  const api = await sheetsApi();
+  if (!api) {
+    if (!fs.existsSync(SA_KEY_PATH)) throw new Error('Sheet key file missing — this copy was downloaded without google-service-account.json. Ask your admin for the RecruitFlow-team.zip (it includes the key).');
+    if (!db.settings.sheetId) throw new Error('Sheet ID not set in Settings.');
+    throw new Error('Google Sheet not connected.');
+  }
   const r = await api.spreadsheets.values.get({ spreadsheetId: db.settings.sheetId, range: SHEET_TAB });
   const rows = r.data.values || []; const header = rows[0] || [];
   const idx = {}; header.forEach((h, i) => idx[h] = i);
