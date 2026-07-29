@@ -208,6 +208,8 @@ function detectNoticeDays(t) {
   return null;
 }
 function noticeLabel(days) { days = Number(days); if (isNaN(days)) return ''; if (days === 0) return 'immediately'; if (days % 30 === 0) return (days / 30) + ' month' + (days / 30 > 1 ? 's' : ''); return days + ' days'; }
+// Canonical notice period for recording — "Immediate" / "15 days" / "1 month" (so 15, "15 days", "1 month" all normalize).
+function canonicalNotice(days) { days = Number(days); if (isNaN(days)) return ''; if (days === 0) return 'Immediate'; return noticeLabel(days); }
 // Does the text contain a recognizable day / time? (used to validate availability before scheduling)
 function hasDay(t) { return /\b(today|tomorrow|tmrw|day after|mon|tue|wed|thu|fri|sat|sun)/i.test(t) || /\d{1,2}\s*[\/\-]\s*\d{1,2}/.test(t) || /\d{1,2}\s*(st|nd|rd|th)\b/i.test(t) || /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(t); }
 function hasTime(t) { return /\b\d{1,2}\s*(?::\d{2})?\s*(am|pm)\b/i.test(t) || /\b\d{1,2}:\d{2}\b/.test(t) || /\b(morning|afternoon|evening|noon|after\s?noon)\b/i.test(t); }
@@ -311,6 +313,18 @@ function normalizeCTC(text) {
     }
   }
   return t;
+}
+// Canonical CTC for recording: rewrite every amount in the text to "N LPA" so "10 lacs", "10 LPA",
+// and "10,00,000" all record identically. Preserves labels like fixed/variable/ESOP in a break-up.
+function canonicalCTC(text) {
+  if (!text) return text;
+  return String(text).replace(/(^|\s)(?:₹|rs\.?|inr)?\s*(\d[\d,]*(?:\.\d+)?)\s*(lpa|lakhs?|lacs?|\bl\b|\bk\b|thousand|cr(?:ore)?s?|per\s*annum|\bpa\b|annual|month(?:ly)?|\/mo|\bpm\b)?/gi,
+    (mtch, lead, num, unit) => {
+      const lpa = parseCTCValue(num + ' ' + (unit || ''));
+      if (lpa === null) return mtch;
+      const v = Math.round(lpa * 100) / 100;
+      return (lead || '') + (Number.isInteger(v) ? v : v.toFixed(2)) + ' LPA';
+    }).replace(/\s{2,}/g, ' ').trim();
 }
 // Parse a loose date string to a future Date (for "last working day").
 function parseDateLoose(t) {
@@ -625,7 +639,7 @@ function handleIncoming(c, ch, text, skipPush) {
     case 'currentctc': {
       if (questionLike(text) && !/\d/.test(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('currentctc', c, j)); break; }
       // Free-text CTC break-up (fixed / variable / ESOP) — captured as-is, never used to reject.
-      ch.answers.currentCTC = text.trim();
+      ch.answers.currentCTC = canonicalCTC(text.trim());
       advance(c, ch, 'opentocity', out);
       break;
     }
@@ -645,7 +659,7 @@ function handleIncoming(c, ch, text, skipPush) {
       }
       const d = detectNoticeDays(text);
       if (d === null) { if (questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; } out.push(clarify('notice', j)); break; }
-      ch.answers.noticePeriod = text.trim(); ch.answers.noticePeriodDays = d;
+      ch.answers.noticePeriod = canonicalNotice(d); ch.answers.noticePeriodDays = d;
       advance(c, ch, 'resume', out);
       break;
     }
