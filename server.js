@@ -1443,6 +1443,18 @@ client.on('disconnected', r => {
 // closes the gap for brief hiccups that don't trigger a full disconnect/reconnect cycle.
 if (!process.env.RF_TEST) setInterval(() => { if (waStatus === 'ready') catchUpWhatsApp().catch(() => {}); }, 2 * 60 * 1000);
 
+// Health check: catches the "zombie" state where waStatus says 'ready' but the underlying page is
+// dead so sends silently do nothing (never throwing) — the watchdog misses it because status looks ok.
+// Every 60s, if we think we're ready, confirm the client truly reports CONNECTED; if not, recover.
+async function healthCheck() {
+  if (waStatus !== 'ready' || recovering) return;
+  let state = null;
+  try { state = await Promise.race([client.getState(), new Promise((_, r) => setTimeout(() => r(new Error('getState timeout')), 15000))]); }
+  catch (e) { log(`🩺 Health check failed (${e.message}) — connection looks dead, recovering.`); return recoverWhatsApp(); }
+  if (state !== 'CONNECTED') { log(`🩺 Health check: state="${state}" (not CONNECTED) — recovering.`); return recoverWhatsApp(); }
+}
+if (!process.env.RF_TEST) setInterval(() => { healthCheck().catch(() => {}); }, 60 * 1000);
+
 /* --- Self-healing: guarantee a clean Chrome on every start, auto-recover if the client hangs --- */
 const { execSync } = require('child_process');
 // Kill any leftover headless Chrome from a previous run (only this app uses "Chrome for Testing").
