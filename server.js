@@ -2109,7 +2109,28 @@ app.get('/api/status', (req, res) => res.json({ waStatus, qr: qrDataUrl, connect
 app.get('/api/state', (req, res) => res.json(db));
 
 // ----- Settings (email + Google credentials). Secrets are write-only; never returned. -----
-app.get('/api/settings', (req, res) => res.json({ email: db.settings.email || '', emailPassSet: !!db.settings.emailPass, googleClientId: db.settings.googleClientId || '', googleClientSecretSet: !!db.settings.googleClientSecret, calendarConnected: calendarConnected(), redirectUri: OAUTH_REDIRECT, anthropicKeySet: !!db.settings.anthropicKey, aiEnabled: !!db.settings.aiEnabled, aiModel: aiModel() }));
+app.get('/api/settings', (req, res) => res.json({ email: db.settings.email || '', emailPassSet: !!db.settings.emailPass, googleClientId: db.settings.googleClientId || '', googleClientSecretSet: !!db.settings.googleClientSecret, calendarConnected: calendarConnected(), redirectUri: OAUTH_REDIRECT, anthropicKeySet: !!db.settings.anthropicKey, aiEnabled: !!db.settings.aiEnabled, aiModel: aiModel(), sheetConnected: fs.existsSync(SA_KEY_PATH), sheetId: db.settings.sheetId || '' }));
+// Paste the service-account key + sheet id here (so teammates can connect the sheet without a bundled file).
+app.post('/api/sheet/connect', async (req, res) => {
+  try {
+    const { key, sheetId } = req.body || {};
+    if (sheetId !== undefined) {
+      const raw = String(sheetId || '').trim();
+      const m = raw.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);   // accept a full sheet link OR a bare id
+      db.settings.sheetId = m ? m[1] : raw;
+    }
+    if (key) {
+      let parsed; try { parsed = typeof key === 'string' ? JSON.parse(key) : key; } catch (e) { return res.status(400).json({ error: "That doesn't look like valid JSON — paste the full key file contents." }); }
+      if (!parsed.client_email || !parsed.private_key) return res.status(400).json({ error: 'Key is missing client_email / private_key — paste the complete JSON.' });
+      fs.writeFileSync(SA_KEY_PATH, JSON.stringify(parsed, null, 2));
+      _sheetsApi = null;   // force re-init with the new key
+    }
+    save();
+    const api = await sheetsApi(); if (!api) return res.status(400).json({ error: 'Not connected — check the key and sheet id.' });
+    const meta = await api.spreadsheets.get({ spreadsheetId: db.settings.sheetId });
+    res.json({ ok: true, title: meta.data.properties && meta.data.properties.title });
+  } catch (e) { res.status(400).json({ error: 'Connect failed: ' + e.message }); }
+});
 app.post('/api/settings', (req, res) => {
   const b = req.body;
   if (b.email !== undefined) db.settings.email = (b.email || '').trim();

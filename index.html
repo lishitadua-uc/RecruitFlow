@@ -389,7 +389,12 @@ let SET={};
 async function renderSettings(v){
   SET=await api('GET','/api/settings');
   const calOk=STATUS.calendarConnected;
-  v.innerHTML=`<h1>Settings</h1><p class="sub">Configure email outreach and Google Calendar. These stay on this computer only.</p>
+  v.innerHTML=`<h1>Settings</h1><p class="sub">Configure the sheet, email and Google Calendar. These stay on this computer only.</p>
+  <div class="card" style="margin-bottom:16px"><h2 style="margin-bottom:4px">📗 Connect Sheet ${SET.sheetConnected?'<span class="badge b-green" style="margin-left:6px">Connected</span>':'<span class="badge b-red" style="margin-left:6px">Not connected</span>'}</h2>
+    <p class="hint" style="margin-bottom:12px">Paste the shared <b>sheet link</b> and the <b>access key</b> (your admin will send you the key). This is what lets RecruitFlow read your candidates and write answers back.</p>
+    ${field('s_sheetlink','Google Sheet link',SET.sheetId?('https://docs.google.com/spreadsheets/d/'+SET.sheetId+'/edit'):'',{ph:'paste the sheet URL'})}
+    <div class="field"><label>Access key (JSON) ${SET.sheetConnected?'<span class="badge b-green" style="margin-left:6px">saved</span>':''}</label><textarea id="s_sheetkey" placeholder='${SET.sheetConnected?"•••••••• (saved — leave blank to keep)":"paste the full key text your admin sent (starts with { \"type\": \"service_account\" … })"}' style="background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:10px 11px;width:100%;min-height:80px;font-family:ui-monospace,monospace;font-size:11px"></textarea></div>
+    <div class="toolbar"><button class="btn" onclick="connectSheet()">🔗 Connect Sheet</button></div></div>
   <div class="card" style="margin-bottom:16px"><h2 style="margin-bottom:4px">✉️ Email (Gmail / Google Workspace)</h2>
     <p class="hint" style="margin-bottom:12px">Used to send outreach and read candidate replies. You need a <b>Google App Password</b> (not your normal password) — <a href="https://myaccount.google.com/apppasswords" target="_blank">create one here</a> with 2-Step Verification on, then paste the 16-character code.</p>
     ${field('s_email','Your email address',SET.email,{type:'email',ph:'you@urbancompany.com'})}
@@ -466,6 +471,15 @@ async function runSim(){
   out.innerHTML=`<div class="card" style="background:var(--panel2)">${engineBadge} ${r.aiReady?'':'<span class="hint">(add an API key in Settings to test the AI path)</span>'}${det}
     <div style="margin-top:10px"><div class="hint" style="margin-bottom:4px">Bot would reply:</div><div style="white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px">${esc(reply)}</div></div>
     <div class="hint" style="margin-top:8px">Next step → <b>${esc(r.newStage)}</b></div></div>`;
+}
+async function connectSheet(){
+  const link=document.getElementById('s_sheetlink').value.trim();
+  const key=document.getElementById('s_sheetkey').value.trim();
+  if(!link)return toast('Please paste the sheet link.');
+  const btn=event&&event.target; if(btn){btn.disabled=true;btn.textContent='Connecting…';}
+  const r=await api('POST','/api/sheet/connect',{sheetId:link,key:key||undefined});
+  if(r.error)toast('⚠️ '+r.error); else toast('📗 Connected to sheet'+(r.title?': '+r.title:'')+' ✅');
+  await refresh();render();
 }
 async function saveEmail(){await api('POST','/api/settings',{email:document.getElementById('s_email').value.trim(),emailPass:document.getElementById('s_emailpass').value});await refresh();toast('Email settings saved.');render();}
 async function testEmail(){await saveEmailQuiet();const r=await api('POST','/api/email/test');await refresh();r.error?toast('⚠️ '+r.error):toast('✅ Test email sent — check your inbox.');render();}
