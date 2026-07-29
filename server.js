@@ -1527,7 +1527,7 @@ async function autoSyncAndRun() {
   } catch (e) { log('🤖 Auto-sync error: ' + e.message); }
   finally { _autoRunning = false; }
 }
-if (!process.env.RF_TEST) { setInterval(() => { autoSyncAndRun().catch(() => {}); }, 10 * 60 * 1000); setTimeout(() => { autoSyncAndRun().catch(() => {}); }, 30000); }
+if (!process.env.RF_TEST) { setInterval(() => { autoSyncAndRun().catch(() => {}); }, 60 * 1000); setTimeout(() => { autoSyncAndRun().catch(() => {}); }, 30000); }
 
 /* --- Self-healing: guarantee a clean Chrome on every start, auto-recover if the client hangs --- */
 const { execSync } = require('child_process');
