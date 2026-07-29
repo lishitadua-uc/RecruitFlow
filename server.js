@@ -370,6 +370,12 @@ function numberedOptions(stage, c, j) {
   if (!p || !p.options || !p.options.length) return '';
   return `\n\n${p.options.map((o, i) => `${i + 1}. ${o}`).join('\n')}\n\n_(reply with the number or your answer)_`;
 }
+// Plain bulleted options (no numbers) — used for date/time so "1." isn't confused with "1 pm".
+function bulletOptions(stage, c, j) {
+  const p = pollForStage(stage, c, j);
+  if (!p || !p.options || !p.options.length) return '';
+  return `\n\n${p.options.map(o => `• ${o}`).join('\n')}\n\n_(just reply with your choice)_`;
+}
 function stagePrompt(stage, c, j) {
   switch (stage) {
     case 'location': return `Great! 🙌 To help us find the best fit for you, I just have a few quick, easy questions.\n\nFirst — what is your *current location*?`;
@@ -378,8 +384,8 @@ function stagePrompt(stage, c, j) {
     case 'notice': return `Almost there! What's your *notice period*?` + numberedOptions('notice', c, j);
     case 'resume': return `One last thing — do you have an *updated resume* you'd like to share, in *PDF or Word* format? 📄 You can attach it right here. If not, just say *"skip"* and we'll move on.`;
     case 'avail':
-    case 'availdate': return `Brilliant! 🎉 Let's set up your call. Which *date* works best for you?` + numberedOptions('availdate', c, j);
-    case 'availtime': return `Great! And which *time slot* suits you?` + numberedOptions('availtime', c, j);
+    case 'availdate': return `Brilliant! 🎉 Let's set up your call. Which *date* works best for you?` + bulletOptions('availdate', c, j);
+    case 'availtime': return `Great! And which *time slot* suits you?` + bulletOptions('availtime', c, j);
   }
   return '';
 }
@@ -608,7 +614,7 @@ function handleIncoming(c, ch, text, skipPush) {
 
   // Numbered-option shortcut: if the current stage offers a numbered list and the candidate replied with
   // just a number (e.g. "2"), translate it to that option's answer before the stage handles it.
-  const _opt = pollForStage(ch.stage, c, j);
+  const _opt = (ch.stage === 'availdate' || ch.stage === 'availtime') ? null : pollForStage(ch.stage, c, j);   // avail uses plain lists — a bare number there means a time/date, not an option index
   if (_opt && _opt.options && /^\s*\d{1,2}\s*$/.test(text)) {
     const _i = parseInt(text, 10) - 1;
     if (_i >= 0 && _i < _opt.options.length) text = voteToAnswer(ch.stage, _opt.options[_i]);
@@ -683,7 +689,7 @@ function handleIncoming(c, ch, text, skipPush) {
         out.push(`No worries at all! 🙂 Would you still like to go ahead with a call with the recruiter?`);
         break;
       }
-      if (!d) { out.push(`No problem! 🙂 Could you pick one of these *dates* for the call?` + numberedOptions('availdate', c, j)); break; }
+      if (!d) { out.push(`No problem! 🙂 Could you pick one of these *dates* for the call?` + bulletOptions('availdate', c, j)); break; }
       ch.answers._dateISO = d.toISOString();
       ch.answers._dateLabel = fmtDateOpt(d);
       const slotSame = matchExplicitTimeSlot(text);   // only if they gave an explicit time too (e.g. "Friday 3 PM")
@@ -703,7 +709,7 @@ function handleIncoming(c, ch, text, skipPush) {
         // They named a time, but it's outside our call hours — acknowledge it warmly, then re-offer the slots.
         const tm = parseTimeHour(text);
         const lead = tm ? `Thanks! 🙂 Our recruiter calls run *between 11 AM and 5 PM*, so ${text.trim()} won't work — could you pick one of these?` : `No problem! Please pick a *time slot* for the call:`;
-        out.push(lead + numberedOptions('availtime', c, j));
+        out.push(lead + bulletOptions('availtime', c, j));
         break;
       }
       const start = new Date(ch.answers._dateISO || Date.now()); start.setHours(slot.start, 0, 0, 0);
