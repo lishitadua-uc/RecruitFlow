@@ -247,7 +247,7 @@ function fmtDateOpt(d) { return `${WDAYS[d.getDay()]} - ${d.getDate()} ${MONTHS_
 // The next 5 dates starting tomorrow.
 function availDateOptions() {
   const opts = [], base = new Date();
-  for (let i = 1; i <= 5; i++) { const d = new Date(base); d.setDate(d.getDate() + i); d.setHours(0, 0, 0, 0); opts.push({ label: fmtDateOpt(d), date: d }); }
+  for (let i = 1; opts.length < 5 && i <= 10; i++) { const d = new Date(base); d.setDate(d.getDate() + i); d.setHours(0, 0, 0, 0); if (d.getDay() === 0) continue; opts.push({ label: fmtDateOpt(d), date: d }); }   // skip Sundays
   return opts;
 }
 const TIME_SLOTS = [
@@ -690,6 +690,7 @@ function handleIncoming(c, ch, text, skipPush) {
         break;
       }
       if (!d) { out.push(`No problem! 🙂 Could you pick one of these *dates* for the call?` + bulletOptions('availdate', c, j)); break; }
+      if (d.getDay() === 0) { out.push(`We don't schedule calls on Sundays 🙂 Could you pick another day?` + bulletOptions('availdate', c, j)); break; }
       ch.answers._dateISO = d.toISOString();
       ch.answers._dateLabel = fmtDateOpt(d);
       const slotSame = matchExplicitTimeSlot(text);   // only if they gave an explicit time too (e.g. "Friday 3 PM")
