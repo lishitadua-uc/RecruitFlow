@@ -41,7 +41,7 @@ function fmtPhone(p) { const d = normPhone(p); return d ? '+' + d : ''; }
 const EXP = ['0-1 years', '1-3 years', '3-5 years', '5-8 years', '8+ years'];
 const ROLE = ['Individual Contributor', 'Team Lead / Senior', 'Manager', 'Fresher / Looking for first role', 'Other'];
 const TIME = ['Morning (9 AM - 12 PM)', 'Afternoon (12 PM - 3 PM)', 'Evening (3 PM - 6 PM)'];
-const STAGE_LABEL = { new: 'Not started', outreach: 'Outreach sent', details_form: 'Details form sent', location: 'Asked location', preflocation: 'Preferred location', workpref: 'Work preference', experience: 'Experience', role: 'Current role', currentctc: 'Current CTC', expectedctc: 'Expected CTC', notice: 'Notice period', skills: 'Skill questions', resume: 'Resume request', keepprofile: 'Asked to keep profile', reason: 'Asked why not interested', resurface: 'Resurface timing', avail: 'Scheduling', availdate: 'Scheduling', availtime: 'Scheduling', avail_time: 'Scheduling', avail_day: 'Scheduling', scheduled: 'Call scheduled ✓', declined: 'Not interested', location_dropout: 'Location mismatch', awaiting_role: 'Awaiting a role in their city', notice_dropout: 'Notice too long', pending_review: 'Pending recruiter review' };
+const STAGE_LABEL = { new: 'Not started', outreach: 'Outreach sent', details_form: 'Details form sent', location: 'Asked location', preflocation: 'Preferred location', workpref: 'Work preference', experience: 'Experience', role: 'Current role', currentctc: 'Current CTC', opentocity: 'Open to location', expectedctc: 'Expected CTC', notice: 'Notice period', skills: 'Skill questions', resume: 'Resume request', keepprofile: 'Asked to keep profile', reason: 'Asked why not interested', resurface: 'Resurface timing', avail: 'Scheduling', availdate: 'Scheduling', availtime: 'Scheduling', avail_time: 'Scheduling', avail_day: 'Scheduling', scheduled: 'Call scheduled ✓', declined: 'Not interested', location_dropout: 'Location mismatch', awaiting_role: 'Awaiting a role in their city', notice_dropout: 'Notice too long', pending_review: 'Pending recruiter review' };
 const isTerminal = s => ['scheduled', 'declined', 'location_dropout', 'awaiting_role', 'notice_dropout', 'pending_review'].includes(s);
 
 // Classify a job as Managerial (Senior Manager & above) or Individual Contributor, from its title.
@@ -345,19 +345,16 @@ function detectDay(t) {
 /* ---------------- Message text (clean WhatsApp formatting) ---------------- */
 function outreachText(c, j) {
   const hasPdf = !!j.jdFile;
-  return `Hi ${c.name}! 👋\n\nI'm reaching out from *${db.company}*. We came across your profile and think you could be a great fit for our *${j.title}* role${j.location ? ` based in ${j.location}` : ''}.\n\n` +
+  return `Hi ${c.name}! 👋\n\nI am a UC recruit bot, reaching out from *${db.company}*. We came across your profile and think you could be a great fit for our *${j.title}* role${j.location ? ` based in ${j.location}` : ''}.\n\n` +
     (hasPdf ? `📄 I've attached the full job description below — do take a look.\n\n` : ``) +
     `Are you open to exploring this opportunity? 😊 Feel free to ask me anything about the role.`;
 }
 function stagePrompt(stage, c, j) {
   switch (stage) {
-    case 'location': return `Great! 🙌 To help us find the best fit for you, I just have a few quick, easy questions.\n\nFirst — which city are you currently based in?`;
-    case 'workpref': return `Lovely! This role is based in *${j.location}* and involves *${j.workingDays} days/week from office*.${j.remote === 'No' ? ' There is no remote option for this role.' : ''}\n\nAre you comfortable with that?`;
-    case 'preflocation': return `Thanks for sharing! 😊 And which city would you prefer to work in? (If you're open to relocating, feel free to list all the cities that would work for you.)`;
-    case 'experience': return `Wonderful! How many years of *experience* do you have in total?`;
-    case 'currentctc': return `Could you share your *current CTC* (annual)? 😊 Any format works — e.g. "12", "12 LPA", "8 lakh", or "₹12,00,000".`;
-    case 'expectedctc': return `And what's your *expected CTC*? Same deal — any format is fine, e.g. "15" or "15 LPA".`;
-    case 'notice': return `Almost there! What's your *notice period*? (for example: "immediate", "30 days", or "2 months")`;
+    case 'location': return `Great! 🙌 To help us find the best fit for you, I just have a few quick, easy questions.\n\nFirst — what is your *current location*?`;
+    case 'currentctc': return `Thanks! 😊 Could you share your *current CTC*? Please include the break-up — *fixed*, *variable* (if any) and *ESOPs* (if any).`;
+    case 'opentocity': return `Got it! And are you *open to ${j.location || 'the job location'}*?`;
+    case 'notice': return `Almost there! What's your *notice period*?`;
     case 'keepprofile': return `Would it be okay if we kept your profile on file for future opportunities that might be a great match? 🙂\n\n• ${KEEPPROFILE_YES}\n• ${KEEPPROFILE_NO}`;
     case 'resurface': return `Wonderful! 😊 Just so we reach out at the right time — when do you think you'll be open to exploring new opportunities?\n\n${RESURFACE_OPTS.map(o => '• ' + o).join('\n')}`;
     case 'resume': return `One last thing — do you have an *updated resume* you'd like to share, in *PDF or Word* format? 📄 You can attach it right here. If not, just say *"skip"* and we'll move on.`;
@@ -372,10 +369,8 @@ function clarify(stage, j) {
   const note = `Hmm, I couldn't quite understand that — there may be a spelling error. Please resend your answer without any typos. 🙏\n\n`;
   switch (stage) {
     case 'outreach': return note + `Are you open to exploring this role? Just let me know.`;
-    case 'workpref': return note + `Are you comfortable with the office location and working days?`;
-    case 'experience': return note + `How many years of experience do you have? (for example, "4 years")`;
-    case 'currentctc': return note + `What is your current CTC? Any format works, e.g. "12 LPA" or "8 lakh".`;
-    case 'expectedctc': return note + `What is your expected CTC? Any format works, e.g. "15 LPA".`;
+    case 'opentocity': return note + `Are you open to ${j ? j.location : 'the job location'}? A quick yes or no works. 🙂`;
+    case 'currentctc': return note + `Could you share your current CTC with the break-up (fixed / variable / ESOPs)?`;
     case 'notice': return note + `What is your notice period? e.g. "30 days", "2 months", or "immediate".`;
     case 'avail': return note + `Please share a day and time that works for a quick call. 🕘`;
   }
@@ -432,24 +427,21 @@ function flagOnce(ch, kind, text) {
   if (existing) { existing.q = text; existing.ts = now(); return; }   // refresh text if answer changed
   ch.flags.push({ q: text, kind, auto: true, ts: now(), resolved: false });
 }
-// Auto-flag anything a recruiter should eyeball: experience below the role's range, and the notice period.
+// Auto-flag anything a recruiter should eyeball: notice period, and if candidate isn't open to the city.
 function addScreeningFlags(c, ch, j) {
-  const reqIdx = expBucketIndex(j && j.experience), candIdx = expBucketIndex(ch.answers.experience);
-  if (reqIdx != null && candIdx != null && candIdx < reqIdx)
-    flagOnce(ch, 'experience', `⚠ Experience ${ch.answers.experience} is below the role's requirement (${j.experience} years) — not auto-scheduled; recruiter to review.`);
+  if (ch.answers.openToCity === 'No') flagOnce(ch, 'location', `⚠ Not open to ${j ? j.location : 'the job location'} — recruiter to review.`);
   const d = ch.answers.noticePeriodDays;
   if (d != null) {
     const label = ch.answers.noticePeriod || (d + ' days');
-    if (d > effectiveMaxNotice(j)) flagOnce(ch, 'notice', `⚠ Notice period "${label}" is beyond ${effectiveMaxNotice(j)} days — not auto-scheduled; recruiter to follow up.`);
-    else flagOnce(ch, 'notice', `ℹ Notice period: ${label} (within ${effectiveMaxNotice(j)} days — scheduled).`);
+    if (d > effectiveMaxNotice(j)) flagOnce(ch, 'notice', `⚠ Notice period "${label}" is beyond ${effectiveMaxNotice(j)} days — recruiter to follow up.`);
+    else flagOnce(ch, 'notice', `ℹ Notice period: ${label}.`);
   }
 }
+// All 6 details collected → flag anything notable, then offer to book the recruiter call (scheduling kept).
 function proceedAfterScreening(c, ch, out) {
   const j = jobOf(c);
   addScreeningFlags(c, ch, j);
-  if (meetsAutoScheduleCriteria(ch, j)) { advance(c, ch, 'availdate', out); return; }
-  ch.stage = 'pending_review';
-  out.push(`Thank you so much for sharing all these details with us! 🙏 Our recruiter will personally review your profile and get in touch if there's a great next step. We really appreciate your time today. 😊`);
+  advance(c, ch, 'availdate', out);
 }
 // Called once the candidate's preferred location(s) are collected. If they weren't comfortable with the
 // role's office location, we don't screen further — we thank them, keep their profile, and park them in
@@ -471,8 +463,12 @@ function confirmSchedule(c, ch, out) {
   ch.stage = 'scheduled';
   onScheduled(c, ch);   // build calendar links + email invites to both parties
   const link = ch.answers.candidateCalendarLink;
-  out.push(`Wonderful! 🎉 Your call with the recruiter has been scheduled for *${ch.answers.availability}*. You'll receive a calendar invite shortly — please do accept it so we can confirm the slot. Looking forward to connecting you! 😊📞` + (link ? `\n\n📅 Add this call to your calendar: ${link}` : ''));
+  const rec = recruiterName(c);
+  out.push(`Wonderful! 🎉 Your call has been scheduled for *${ch.answers.availability}*. You'll receive a calendar invite shortly — please do accept it.` + (link ? `\n\n📅 Add this call to your calendar: ${link}` : ''));
+  out.push(`Thank you ${c.name} for your time & for sharing all the required details. I'll now pass on your information to *${rec}* from ${db.company}'s TA team. Should you be shortlisted, ${rec} will reach out to you directly. 🙏`);
 }
+// Recruiter name for closings — from the candidate/job (sheet's recruiter_name wires in later); safe default.
+function recruiterName(c) { const j = jobOf(c); return (c && c.recruiterName) || (j && j.recruiterName) || 'our recruiter'; }
 function askQuestion(c, ch, text, out) { const m = matchTemplate(text, jobOf(c)); out.push(m.resp); if (m.flag) ch.flags.push({ q: text, ts: now(), resolved: false }); return m.flag; }
 // Side-question mid-flow. Only the true catch-all (isFallback) jumps to scheduling; known templates just answer + re-ask.
 function sideQuestion(c, ch, text, out, jump) {
@@ -526,7 +522,13 @@ function handleIncoming(c, ch, text, skipPush) {
     const days = parseDateToDays(text);
     ch.answers.noticePeriod = 'Serving notice — last working day: ' + text.trim();
     ch.answers.noticePeriodDays = (days == null ? 0 : days);
-    enterSkills(c, ch, out);   // notice period is only ever collected, never a reason to reject
+    advance(c, ch, 'resume', out);   // notice is only ever collected, never a reason to reject
+    return finish(ch, out);
+  }
+  if (ch.pending === 'decline_reason') {
+    ch.pending = null; ch.stage = 'declined';
+    ch.answers.declineReason = text.trim();
+    out.push(`Thank you ${c.name} for your time. Feel free to contact us if you change your mind. Thanks! 🙏`);
     return finish(ch, out);
   }
   if (ch.pending === 'resume_file') {
@@ -595,89 +597,31 @@ function handleIncoming(c, ch, text, skipPush) {
       const v = detectInterest(text);
       if (v === 'yes') { ch.answers.interested = 'Yes'; advance(c, ch, 'location', out); }
       else if (v === 'no' || v === 'maybe') {
-        // Not interested (firm or soft) → thank them, then ask if we can keep their profile for later.
+        // Not interested → ask the reason, then send the not-interested closing (per the flow doc).
         ch.answers.interested = 'No';
-        out.push(`Thank you so much for letting us know! 🙏`);
-        advance(c, ch, 'keepprofile', out);
+        ch.pending = 'decline_reason';
+        out.push(`No problem at all — thank you for letting me know! 🙏 May I ask the main reason you're not keen right now? (a quick line is fine)`);
       }
       else { if (questionLike(text)) sideQuestion(c, ch, text, out, false); out.push(clarify('outreach', j)); }
       break;
     }
-    case 'keepprofile': {
-      const v = detectComfort(text);
-      if (v === 'yes') { advance(c, ch, 'resurface', out); }
-      else if (v === 'no') { ch.stage = 'declined'; out.push("No problem at all, and thank you so much for your time today! 🙏 Wishing you all the best."); }
-      else { out.push(`Just to confirm — would it be okay if we kept your profile on file for future opportunities? 🙂`); }
-      break;
-    }
-    case 'resurface': {
-      const months = parseResurfaceMonths(text);
-      if (months === null) { out.push(`No problem! Just let us know roughly when: ${RESURFACE_OPTS.map(o => '• ' + o).join('  ')}`); break; }
-      ch.stage = 'declined';
-      if (months === 0) { c.dnc = true; ch.answers.resurfaceAfter = "Asked not to be contacted again"; out.push("Understood — we won't reach out again. Thank you so much for your time today, and all the best! 🙏"); break; }
-      if (months === 'unsure') {
-        ch.answers.resurfaceAfter = 'Not sure yet';
-        out.push(`No problem at all! 😊 We'll keep your profile on file and reach out if a great opportunity comes up. In the meantime, feel free to follow *${db.company}* on LinkedIn or check our Careers page for new openings. Thank you so much, and take care! 🙏`);
-        break;
-      }
-      const d = new Date(); d.setMonth(d.getMonth() + months);
-      ch.answers.resurfaceAfter = `~${months} month${months > 1 ? 's' : ''}`;
-      ch.answers.resurfaceDate = d.toISOString();
-      out.push(`Perfect! 😊 We'll reach out again around *${d.toLocaleString('en-IN', { month: 'long', year: 'numeric' })}* if there's a great fit. In the meantime, do follow *${db.company}* on LinkedIn or check our Careers page for openings. Thank you so much, and take care until then! 🙏`);
-      break;
-    }
     case 'location': {
       if (questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('location', c, j)); break; }
-      // "anywhere / open to relocate / remote" isn't a current city — ask once for the actual city.
-      if (isVagueLocation(text) && !ch.askedCity) { ch.askedCity = true; out.push("Got it! 🙂 And just so we have it right — which city are you *based in right now*?"); break; }
-      ch.answers.currentLocation = text.trim(); advance(c, ch, 'workpref', out);
-      break;
-    }
-    case 'workpref': {
-      const v = detectComfort(text);
-      if (v === 'yes') { ch.answers.workComfortable = 'Yes'; advance(c, ch, 'preflocation', out); }
-      else if (v === 'no') { ch.answers.workComfortable = 'No'; out.push(`Thanks for being upfront about that! 🙂`); advance(c, ch, 'preflocation', out); }
-      else { if (questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; } out.push(clarify('workpref', j)); }
-      break;
-    }
-    case 'preflocation': {
-      if (questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('preflocation', c, j)); break; }
-      // "Anywhere / open to relocate" already covers all cities — no need to ask for more.
-      if (isVagueLocation(text)) { ch.answers.preferredLocation = 'Open to any location / relocation'; afterPreferredLocation(c, ch, out); break; }
-      // A specific city was given — check if there's another before moving on, so we don't miss any.
-      ch.answers.preferredLocation = text.trim();
-      ch.pending = 'preflocation_more';
-      out.push(`Got it — *${text.trim()}* noted! 🙂 Would you like to add any other city? (yes/no)`);
-      break;
-    }
-    case 'experience': {
-      const v = detectExperience(text);
-      if (v) { ch.answers.experience = v; advance(c, ch, 'currentctc', out); }
-      else { if (questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; } out.push(clarify('experience', j)); }
+      ch.answers.currentLocation = text.trim(); advance(c, ch, 'currentctc', out);
       break;
     }
     case 'currentctc': {
-      if (!/\d/.test(text) && !parseCTCValue(text) && questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('currentctc', c, j)); break; }
-      const amt = parseCTCValue(text);
-      if (amt === null || amt <= 0) { out.push(`Hmm, I couldn't quite catch a number there 🙂 Could you share your current CTC? Something like "12", "12 LPA", "8 lakh", or "₹12,00,000" all work great!`); break; }
-      ch.answers.currentCTC = normalizeCTC(text);
-      ch.answers._currentCTCValue = amt;   // stored for the expected-CTC comparison
-      // Combined answer: "current 12, expecting 15" → also capture expected and skip ahead.
-      const expM = text.match(/(?:expect(?:ing|ed)?|hoping|looking for|want)\s*[:\-]?\s*(?:around|approx|about)?\s*(\d+(?:\.\d+)?)\s*(lpa|lakh|lac|k)?/i);
-      if (expM && parseFloat(expM[1]) > 0) {
-        const expAmt = parseCTCValue(expM[1] + ' ' + (expM[2] || 'lpa'));
-        if (expAmt !== null && expAmt >= amt) { ch.answers.expectedCTC = expM[1] + (expM[2] ? ' ' + expM[2] : ' LPA'); advance(c, ch, 'notice', out); break; }
-      }
-      advance(c, ch, 'expectedctc', out);
+      if (questionLike(text) && !/\d/.test(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('currentctc', c, j)); break; }
+      // Free-text CTC break-up (fixed / variable / ESOP) — captured as-is, never used to reject.
+      ch.answers.currentCTC = text.trim();
+      advance(c, ch, 'opentocity', out);
       break;
     }
-    case 'expectedctc': {
-      if (!/\d/.test(text) && !parseCTCValue(text) && questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; out.push(stagePrompt('expectedctc', c, j)); break; }
-      const amt = parseCTCValue(text);
-      if (amt === null || amt <= 0) { out.push(`Hmm, I couldn't quite catch a number there 🙂 Could you share your expected CTC? Something like "15", "15 LPA", "10 lakh", or "₹15,00,000" all work great!`); break; }
-      const currentAmt = ch.answers._currentCTCValue;
-      if (currentAmt != null && amt < currentAmt) { out.push(`Just to double check — your expected CTC seems a little lower than your current CTC. 🙂 Could you re-enter your expected CTC?`); break; }
-      ch.answers.expectedCTC = normalizeCTC(text); advance(c, ch, 'notice', out);
+    case 'opentocity': {
+      const v = detectComfort(text);
+      if (v === 'yes') { ch.answers.openToCity = 'Yes'; advance(c, ch, 'notice', out); }
+      else if (v === 'no') { ch.answers.openToCity = 'No'; advance(c, ch, 'notice', out); }   // collected only, never rejects
+      else { if (questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; } out.push(clarify('opentocity', j)); }
       break;
     }
     case 'notice': {
@@ -690,27 +634,7 @@ function handleIncoming(c, ch, text, skipPush) {
       const d = detectNoticeDays(text);
       if (d === null) { if (questionLike(text)) { if (sideQuestion(c, ch, text, out, true)) break; } out.push(clarify('notice', j)); break; }
       ch.answers.noticePeriod = text.trim(); ch.answers.noticePeriodDays = d;
-      enterSkills(c, ch, out);   // notice period is only ever collected, never a reason to reject
-      break;
-    }
-    case 'skills': {
-      const qs = (j.skillQuestions || []).filter(q => q && q.trim());
-      const i = ch.skillIdx || 0;
-      const opts = parseSkillQuestionOptions(qs[i]);
-      let answer = null;
-      if (opts) {
-        const tl = text.trim().toLowerCase();
-        answer = opts.find(o => o.toLowerCase() === tl || tl.includes(o.toLowerCase()));
-        if (!answer) { out.push(`Just to confirm — ${opts[0]} or ${opts[1]}? 🙂`); break; }
-      } else {
-        const v = detectComfort(text);
-        if (v === null) { out.push(`Just a quick yes or no would help here 🙂`); out.push(qs[i]); break; }
-        answer = v === 'yes' ? 'Yes' : 'No';
-      }
-      ch.answers.skills = ch.answers.skills || [];
-      ch.answers.skills.push({ q: qs[i], a: answer });
-      if (i + 1 < qs.length) { ch.skillIdx = i + 1; out.push(qs[i + 1]); }
-      else { advance(c, ch, 'resume', out); }
+      advance(c, ch, 'resume', out);
       break;
     }
     case 'resume': {
@@ -870,22 +794,19 @@ function rulesUnderstand(c, ch, text) {
   const s = ch.stage;
   if (ch.pending === 'last_working_day') return parseDateToDays(t) !== null;
   if (ch.pending === 'resume_file') return true;
-  if (ch.pending === 'preflocation_more' || ch.pending === 'avail_none_confirm') return detectComfort(t) !== null || questionLike(t);
-  if (ch.pending === 'preflocation_extra' || ch.pending === 'avail_open') return true;
+  if (ch.pending === 'decline_reason') return true;   // any text is a valid reason
+  if (ch.pending === 'avail_none_confirm') return detectComfort(t) !== null || questionLike(t);
+  if (ch.pending === 'avail_open') return true;
   if (detectGreeting(t)) return true;   // pure greetings handled free
   if (s === 'new' || isTerminal(s)) return true;   // ack / relevance filter already handle these (no AI needed)
   const q = questionLike(t);
   switch (s) {
     case 'outreach': return detectInterest(t) !== null || q;
-    case 'location': case 'preflocation': return true;       // any text is taken as the city
-    case 'workpref': return detectComfort(t) !== null || q;
-    case 'experience': return detectExperience(t) !== null || q;
-    case 'currentctc': case 'expectedctc': return (q && !/\d/.test(t) && !parseCTCValue(t)) ? true : (parseCTCValue(t) ? true : false);
+    case 'location': return true;                            // any text is taken as the city
+    case 'currentctc': return true;                          // free-text CTC break-up captured as-is
+    case 'opentocity': return detectComfort(t) !== null || q;
     case 'notice': return /\bserv(e|ing)?\b|on notice|notice running|notice going on/i.test(t) || detectNoticeDays(t) !== null || q;
-    case 'skills': return true;                              // yes/no or a multi-choice answer — handled in-flow
     case 'resume': return true;                              // any text / "skip" recorded
-    case 'keepprofile': return detectComfort(t) !== null || q;
-    case 'resurface': return parseResurfaceMonths(t) !== null || q;
     case 'avail': case 'availdate': return parseDateLoose(t) !== null || isFlexibleSchedule(t) || q;
     case 'availtime': return matchTimeSlot(t) !== null || isFlexibleSchedule(t);
     default: return true;
@@ -1516,18 +1437,8 @@ async function resolveNumber(msg) {
 function pollForStage(stage, c, j) {
   switch (stage) {
     case 'outreach':   return { name: `Are you open to exploring this ${j ? j.title : ''} opportunity? 😊`, options: ['Yes, tell me more 👍', 'Not right now'] };
-    case 'workpref':   return { name: `This role is in ${j ? j.location : ''} — ${j ? j.workingDays : ''} days/week from office${j && j.remote === 'No' ? ' (no remote option)' : ''}. Are you comfortable with this?`, options: ['Yes, I\'m comfortable', 'No, that won\'t work'] };
-    case 'experience': return { name: 'How many years of work experience do you have?', options: ['0–2 years', '3–5 years', '5–8 years', '8+ years'] };
+    case 'opentocity': return { name: `Are you open to ${j ? j.location : 'the job location'}?`, options: ['Yes', 'No'] };
     case 'notice':     return { name: 'What is your notice period?', options: ['Immediate', '15 days', '30 days', '60 days', '90+ days', 'Currently serving notice'] };
-    case 'skills': {
-      const qs = (j && j.skillQuestions || []).filter(q => q && q.trim());
-      const i = (c.wa && c.wa.skillIdx) || 0;
-      const q = qs[i] || '';
-      const opts = parseSkillQuestionOptions(q);
-      return { name: q || 'Quick question:', options: opts || ['Yes', 'No'] };
-    }
-    case 'keepprofile': return { name: 'Would it be okay if we kept your profile on file for future opportunities? 🙂', options: [KEEPPROFILE_YES, KEEPPROFILE_NO] };
-    case 'resurface':  return { name: 'When do you think you\'ll be open to exploring new opportunities? 😊', options: RESURFACE_OPTS };
     case 'avail':
     case 'availdate':  return { name: 'Which date works best for a quick call? 📅', options: availDateOptions().map(o => o.label) };
     case 'availtime':  return { name: 'And which time slot suits you? 🕘', options: TIME_SLOTS.map(s => s.label) };
@@ -1537,9 +1448,7 @@ function pollForStage(stage, c, j) {
 // Translate a chosen poll option back into text the conversation engine understands.
 function voteToAnswer(stage, optionName) {
   const o = optionName || '';
-  if (stage === 'outreach' || stage === 'workpref' || stage === 'keepprofile') return /^yes/i.test(o) ? 'yes' : 'no';
-  if (stage === 'skills') return o;   // either "Yes"/"No" or the exact multi-choice label — both meaningful as-is
-  if (stage === 'experience') return ({ '0–2 years': '2 years', '3–5 years': '4 years', '5–8 years': '6 years', '8+ years': '9 years' })[o] || o;
+  if (stage === 'outreach' || stage === 'opentocity') return /^yes/i.test(o) ? 'yes' : 'no';
   if (stage === 'notice') {
     if (/serving/i.test(o)) return 'serving notice';
     return ({ 'Immediate': 'immediate', '15 days': '15 days', '30 days': '30 days', '60 days': '60 days', '90+ days': '90 days' })[o] || o;
