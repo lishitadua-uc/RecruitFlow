@@ -1503,6 +1503,29 @@ async function healthCheck() {
 }
 if (!process.env.RF_TEST) setInterval(() => { healthCheck().catch(() => {}); }, 60 * 1000);
 
+// Auto-pilot: every 10 min, sync the sheet, then reach out to any freshly-imported candidate — all within
+// working hours (9 AM–8 PM per the flow doc). Data lands in both RecruitFlow (data.json) and the sheet.
+if (db.settings.autoSync === undefined) db.settings.autoSync = true;
+let _autoRunning = false;
+async function autoSyncAndRun() {
+  if (_autoRunning || !db.settings.autoSync || waStatus !== 'ready') return;
+  _autoRunning = true;
+  try {
+    const res = await syncFromSheet();               // pull Strong (auto role+city, 90-day skip) → data.json + sheet idx — runs anytime
+    if (res.added) log(`🤖 Auto-sync: ${res.added} new candidate(s) imported.`);
+    const hr = new Date().getHours();
+    if (hr < 9 || hr >= 20) { save(); return; }      // outreach only initiates 9 AM–8 PM; candidate replies handled anytime
+    for (const c of db.candidates) {
+      if (!c.fromSheet || c.dnc || c.wa.stage !== 'new') continue;
+      try { await sendWhatsAppOutreachTo(c, jobOf(c), loadJDMedia(jobOf(c))); await new Promise(r => setTimeout(r, 1500)); }
+      catch (e) { log(`🤖 Auto-outreach skipped ${c.name}: ${e.message}`); }
+    }
+    save();
+  } catch (e) { log('🤖 Auto-sync error: ' + e.message); }
+  finally { _autoRunning = false; }
+}
+if (!process.env.RF_TEST) { setInterval(() => { autoSyncAndRun().catch(() => {}); }, 10 * 60 * 1000); setTimeout(() => { autoSyncAndRun().catch(() => {}); }, 30000); }
+
 /* --- Self-healing: guarantee a clean Chrome on every start, auto-recover if the client hangs --- */
 const { execSync } = require('child_process');
 // Kill any leftover headless Chrome from a previous run (only this app uses "Chrome for Testing").
@@ -1844,6 +1867,8 @@ app.post('/api/settings', (req, res) => {
   if (b.anthropicKey) db.settings.anthropicKey = b.anthropicKey.trim();
   if (b.clearAnthropicKey) { db.settings.anthropicKey = ''; db.settings.aiEnabled = false; }
   if (b.aiEnabled !== undefined) db.settings.aiEnabled = !!b.aiEnabled;
+  if (b.autoSync !== undefined) db.settings.autoSync = !!b.autoSync;
+  if (b.sheetId !== undefined) db.settings.sheetId = (b.sheetId || '').trim();
   if (b.aiModel !== undefined) db.settings.aiModel = (b.aiModel || '').trim() || 'claude-opus-4-8';
   save(); res.json({ ok: true });
 });
