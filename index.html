@@ -537,7 +537,25 @@ function download(name,text){const blob=new Blob([text],{type:'text/csv'});const
 let toastT;function toast(m){let el=document.getElementById('toast');if(!el){el=document.createElement('div');el.id='toast';el.style.cssText='position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--brand);color:var(--txt);padding:11px 18px;border-radius:10px;z-index:99;font-size:13.5px;max-width:90vw;text-align:center';document.body.appendChild(el);}el.textContent=m;el.style.opacity='1';clearTimeout(toastT);toastT=setTimeout(()=>el.style.opacity='0',3200);}
 
 /* ---- boot ---- */
-(async()=>{ await refresh(); await reload(); if(STATUS.waStatus!=='ready')openConnect(); })();
+// Recruiter login — shown on every fresh download (no saved recruiter yet). Blocks until name+email given.
+function loginModal(){
+  const r=(STATUS.recruiter)||{};
+  document.getElementById('overlay').innerHTML=`<div class="overlay"><div class="modal"><h2>Welcome to RecruitFlow 👋</h2>
+    <p class="modalsub">Sign in so outreach, calendar invites and the closing message use <b>your</b> details on this device.</p>
+    ${field('lg_name','Your name',r.name||'',{ph:'e.g. Somesh Chandra'})}
+    <div class="f2">${field('lg_phone','Your WhatsApp number',r.phone||'+91 ',{ph:'+91 90000 00000'})}${field('lg_email','Your work email',r.email||'',{type:'email',ph:'you@urbancompany.com'})}</div>
+    <p class="hint">This is the recruiter whose WhatsApp sends the messages and whose calendar the calls are booked on.</p>
+    <div class="between" style="margin-top:8px"><span></span><button class="btn" onclick="doLogin()">Continue</button></div></div></div>`;
+}
+async function doLogin(){
+  const g=i=>document.getElementById(i).value.trim();
+  if(!g('lg_name'))return toast('Please enter your name.');
+  if(!g('lg_email'))return toast('Please enter your email.');
+  await api('POST','/api/settings',{recruiterName:g('lg_name'),recruiterPhone:g('lg_phone'),recruiterEmail:g('lg_email')});
+  closeOverlay(); await refresh(); await reload(); render();
+  if(STATUS.waStatus!=='ready')openConnect();
+}
+(async()=>{ await refresh(); await reload(); if(!(STATUS.recruiter&&STATUS.recruiter.loggedIn)){ loginModal(); return; } if(STATUS.waStatus!=='ready')openConnect(); })();
 </script>
 </body>
 </html>

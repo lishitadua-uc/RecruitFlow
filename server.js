@@ -489,10 +489,13 @@ function confirmSchedule(c, ch, out) {
   const link = ch.answers.candidateCalendarLink;
   const rec = recruiterName(c);
   out.push(`Wonderful! 🎉 Your call has been scheduled for *${ch.answers.availability}*. You'll receive a calendar invite shortly — please do accept it.` + (link ? `\n\n📅 Add this call to your calendar: ${link}` : ''));
-  out.push(`Thank you ${c.name} for your time & for sharing all the required details. I'll now pass on your information to *${rec}* from ${db.company}'s TA team. Should you be shortlisted, ${rec} will reach out to you directly. 🙏`);
+  out.push(`Thank you ${c.name} for your time & for sharing all the required details. I'll now pass on your information to *${rec}* from ${db.company}'s TA team. Should you be shortlisted, team will reach out to you directly. 🙏`);
 }
-// Recruiter name for closings — from the candidate/job (sheet's recruiter_name wires in later); safe default.
-function recruiterName(c) { const j = jobOf(c); return (c && c.recruiterName) || (j && j.recruiterName) || 'our recruiter'; }
+// Recruiter name for closings — the recruiter assigned in the sheet for this candidate takes priority,
+// then the recruiter logged in on this device, then a safe default.
+function recruiterName(c) { const j = jobOf(c); return (c && c.recruiterName) || (j && j.recruiterName) || db.settings.recruiterName || 'our recruiter'; }
+// Calendar organizer/attendee = the recruiter's email connected on THIS device (falls back to the mail sender).
+function recruiterCalEmail() { return db.settings.recruiterEmail || db.settings.email || ''; }
 function askQuestion(c, ch, text, out) { const m = matchTemplate(text, jobOf(c)); out.push(m.resp); if (m.flag) ch.flags.push({ q: text, ts: now(), resolved: false }); return m.flag; }
 // Side-question mid-flow. Only the true catch-all (isFallback) jumps to scheduling; known templates just answer + re-ask.
 function sideQuestion(c, ch, text, out, jump) {
@@ -1108,7 +1111,7 @@ async function insertGoogleEvent(c, ch, start, end) {
     location: (j && j.location) || '',
     start: { dateTime: start.toISOString() },
     end: { dateTime: end.toISOString() },
-    attendees: [{ email: db.settings.email }, c.email ? { email: c.email } : null].filter(Boolean),
+    attendees: [{ email: recruiterCalEmail() }, c.email ? { email: c.email } : null].filter(Boolean),
     reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: 30 }, { method: 'email', minutes: 60 }] },
   };
   const r = await calendar.events.insert({ calendarId: 'primary', requestBody: event, sendUpdates: 'all' });
@@ -1117,7 +1120,7 @@ async function insertGoogleEvent(c, ch, start, end) {
 // Fallback when Google Calendar isn't connected: email proper .ics invites to both parties.
 function emailCalendarInvites(c, ch, start, end, uncertain) {
   if (!mailerReady()) return;
-  const j = jobOf(c), loc = (j && j.location) || '', org = db.settings.email;
+  const j = jobOf(c), loc = (j && j.location) || '', org = recruiterCalEmail();
   const recTitle = `Recruiter call: ${c.name} — ${j ? j.title : ''}`;
   const candTitle = `Call with ${db.company} — ${j ? j.title : ''} role`;
   const recDetails = eventDetails(c, ch, uncertain), candDetails = eventDetailsCandidate(c, ch);
@@ -1868,7 +1871,7 @@ const app = express();
 app.use(express.json({ limit: '25mb' }));
 app.use(express.static(__dirname));
 
-app.get('/api/status', (req, res) => res.json({ waStatus, qr: qrDataUrl, connectedAs: waInfo, logs: logs.slice(-40), emailStatus, emailReady: mailerReady(), emailUser: db.settings.email || null, calendarMode: calendarConnected() ? 'google' : 'invite', calendarConnected: calendarConnected(), aiOn: aiReady() }));
+app.get('/api/status', (req, res) => res.json({ waStatus, qr: qrDataUrl, connectedAs: waInfo, logs: logs.slice(-40), emailStatus, emailReady: mailerReady(), emailUser: db.settings.email || null, calendarMode: calendarConnected() ? 'google' : 'invite', calendarConnected: calendarConnected(), aiOn: aiReady(), recruiter: { name: db.settings.recruiterName || '', phone: db.settings.recruiterPhone || '', email: db.settings.recruiterEmail || '', loggedIn: !!(db.settings.recruiterName && db.settings.recruiterEmail) } }));
 app.get('/api/state', (req, res) => res.json(db));
 
 // ----- Settings (email + Google credentials). Secrets are write-only; never returned. -----
@@ -1886,6 +1889,9 @@ app.post('/api/settings', (req, res) => {
   if (b.aiEnabled !== undefined) db.settings.aiEnabled = !!b.aiEnabled;
   if (b.autoSync !== undefined) db.settings.autoSync = !!b.autoSync;
   if (b.sheetId !== undefined) db.settings.sheetId = (b.sheetId || '').trim();
+  if (b.recruiterName !== undefined) db.settings.recruiterName = (b.recruiterName || '').trim();
+  if (b.recruiterPhone !== undefined) db.settings.recruiterPhone = fmtPhone(b.recruiterPhone);
+  if (b.recruiterEmail !== undefined) db.settings.recruiterEmail = (b.recruiterEmail || '').trim();
   if (b.aiModel !== undefined) db.settings.aiModel = (b.aiModel || '').trim() || 'claude-opus-4-8';
   save(); res.json({ ok: true });
 });
