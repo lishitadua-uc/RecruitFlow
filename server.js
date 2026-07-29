@@ -245,31 +245,60 @@ const WDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday',
 const MONTHS_FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 function fmtDateOpt(d) { return `${WDAYS[d.getDay()]} - ${d.getDate()} ${MONTHS_FULL[d.getMonth()]}`; }   // "Thursday - 25 June"
 // The next 5 dates starting tomorrow.
+/* ---------------- Scheduling: 30-min slots, calendar-aware, ≥1hr from now ---------------- */
+const WORK_START = 11, WORK_END = 17, SLOT_MIN = 30, CALL_MIN = 30, LEAD_MIN = 60;
+let _busyCache = { at: 0, intervals: [] };
+// Refresh the recruiter's busy intervals (next ~8 days) from their connected Google Calendar.
+async function refreshBusy() {
+  try {
+    if (!calendarConnected()) { _busyCache = { at: Date.now(), intervals: [] }; return; }
+    const cal = google.calendar({ version: 'v3', auth: oauthClient() });
+    const r = await cal.events.list({ calendarId: 'primary', timeMin: new Date().toISOString(), timeMax: new Date(Date.now() + 8 * 864e5).toISOString(), singleEvents: true, maxResults: 250, orderBy: 'startTime' });
+    const iv = [];
+    for (const e of (r.data.items || [])) {
+      if (e.status === 'cancelled' || e.transparency === 'transparent') continue;   // skip cancelled / "free" events
+      const s = e.start && (e.start.dateTime || (e.start.date && e.start.date + 'T00:00:00'));
+      const en = e.end && (e.end.dateTime || (e.end.date && e.end.date + 'T23:59:59'));
+      if (s && en) iv.push({ start: new Date(s).getTime(), end: new Date(en).getTime() });
+    }
+    _busyCache = { at: Date.now(), intervals: iv };
+  } catch (e) { log('Calendar busy refresh failed: ' + e.message); }
+}
+if (!process.env.RF_TEST) { setInterval(() => refreshBusy().catch(() => {}), 2 * 60 * 1000); setTimeout(() => refreshBusy().catch(() => {}), 8000); }
+const slotIsBusy = (sMs, eMs) => _busyCache.intervals.some(b => sMs < b.end && eMs > b.start);
+// Free 30-min slots for a date: within work hours, ≥1hr from now, not in the past, not clashing with the calendar.
+function daySlots(date) {
+  const out = [], earliest = Date.now() + LEAD_MIN * 60000;
+  for (let h = WORK_START; h < WORK_END; h++) for (const mm of [0, 30]) {
+    const s = new Date(date); s.setHours(h, mm, 0, 0); const sMs = s.getTime(), eMs = sMs + CALL_MIN * 60000;
+    if (sMs < earliest) continue;
+    if (calendarConnected() && slotIsBusy(sMs, eMs)) continue;
+    const e = new Date(eMs);
+    out.push({ label: fmtHour(h, mm) + ' – ' + fmtHour(e.getHours(), e.getMinutes()), start: s });
+  }
+  return out;
+}
+// Dates (skip Sundays) that still have at least one free slot.
 function availDateOptions() {
   const opts = [], base = new Date();
-  for (let i = 1; opts.length < 5 && i <= 10; i++) { const d = new Date(base); d.setDate(d.getDate() + i); d.setHours(0, 0, 0, 0); if (d.getDay() === 0) continue; opts.push({ label: fmtDateOpt(d), date: d }); }   // skip Sundays
+  for (let i = 0; opts.length < 5 && i <= 12; i++) { const d = new Date(base); d.setDate(d.getDate() + i); d.setHours(0, 0, 0, 0); if (d.getDay() === 0) continue; if (!daySlots(d).length) continue; opts.push({ label: fmtDateOpt(d), date: d }); }
   return opts;
 }
-const TIME_SLOTS = [
-  { label: '11 AM – 12 PM', start: 11 }, { label: '12 PM – 1 PM', start: 12 }, { label: '1 PM – 2 PM', start: 13 },
-  { label: '2 PM – 3 PM', start: 14 }, { label: '3 PM – 4 PM', start: 15 }, { label: '4 PM – 5 PM', start: 16 },
-];
-// Match a chosen/typed time to a slot (slot label, or any hour that falls in a slot's start).
-function matchTimeSlot(text) {
+// Match a typed/chosen time to one of that date's free slots.
+function matchTimeSlot(text, dateISO) {
+  const slots = dateISO ? daySlots(new Date(dateISO)) : [];
   const t = (text || '').toLowerCase();
-  for (const s of TIME_SLOTS) if (t.includes(s.label.toLowerCase()) || t.replace(/\s/g, '').includes(s.label.toLowerCase().replace(/\s/g, ''))) return s;
+  for (const s of slots) { const l = s.label.toLowerCase(); if (t.includes(l) || t.replace(/\s/g, '').includes(l.replace(/\s/g, ''))) return s; }
   const tm = parseTimeHour(text);
-  if (tm) { const s = TIME_SLOTS.find(x => x.start === tm.hour); if (s) return s; }
+  if (tm) { const want = new Date(); const s = slots.find(x => x.start.getHours() === tm.hour && x.start.getMinutes() === (tm.min >= 30 ? 30 : 0)) || slots.find(x => x.start.getHours() === tm.hour); if (s) return s; }
   return null;
 }
 // Stricter version for messages that also contain a date (e.g. "Saturday - 4 July") — the day-of-month
 // number ("4") must not be misread as a bare time. Only matches a slot label or an explicit time-of-day
 // marker (am/pm, "3:30", "noon", "morning" etc.), never the loose bare-number fallback in parseTimeHour.
-function matchExplicitTimeSlot(text) {
-  const t = (text || '').toLowerCase();
-  for (const s of TIME_SLOTS) if (t.includes(s.label.toLowerCase()) || t.replace(/\s/g, '').includes(s.label.toLowerCase().replace(/\s/g, ''))) return s;
+function matchExplicitTimeSlot(text, dateISO) {
   if (!/\b(am|pm|noon|morning|afternoon|evening|\d{1,2}:\d{2})\b/i.test(text || '')) return null;
-  return matchTimeSlot(text);
+  return matchTimeSlot(text, dateISO);
 }
 // Extract a positive number from a CTC answer; returns null if none. Used to make CTC mandatory (and reject 0).
 const WORD_NUMS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, twentyfive: 25, thirty: 30, thirtyfive: 35, forty: 40, fifty: 50 };
@@ -696,29 +725,27 @@ function handleIncoming(c, ch, text, skipPush) {
       if (d.getDay() === 0) { out.push(`We don't schedule calls on Sundays 🙂 Could you pick another day?` + bulletOptions('availdate', c, j)); break; }
       ch.answers._dateISO = d.toISOString();
       ch.answers._dateLabel = fmtDateOpt(d);
-      const slotSame = matchExplicitTimeSlot(text);   // only if they gave an explicit time too (e.g. "Friday 3 PM")
+      const slotSame = matchExplicitTimeSlot(text, d.toISOString());   // only if they gave an explicit free time (e.g. "Friday 3 PM")
       if (slotSame) {
-        const start = new Date(d); start.setHours(slotSame.start, 0, 0, 0);
-        ch.answers.scheduledStartISO = start.toISOString();
-        ch.answers.scheduledEndISO = new Date(start.getTime() + 15 * 60000).toISOString();
+        ch.answers.scheduledStartISO = slotSame.start.toISOString();
+        ch.answers.scheduledEndISO = new Date(slotSame.start.getTime() + CALL_MIN * 60000).toISOString();
         ch.answers.availability = `${ch.answers._dateLabel}, ${slotSame.label}`;
         ch.stage = 'availtime'; confirmSchedule(c, ch, out);
       } else { advance(c, ch, 'availtime', out); }
       break;
     }
     case 'availtime': {
-      // "anytime / you decide / flexible" → default to a mid-afternoon slot so scheduling doesn't stall.
-      const slot = matchTimeSlot(text) || (isFlexibleSchedule(text) ? (TIME_SLOTS.find(s => s.start === 15) || TIME_SLOTS[0]) : null);
+      const slots = daySlots(new Date(ch.answers._dateISO || Date.now()));
+      const slot = matchTimeSlot(text, ch.answers._dateISO) || (isFlexibleSchedule(text) && slots.length ? slots[0] : null);
       if (!slot) {
-        // They named a time, but it's outside our call hours — acknowledge it warmly, then re-offer the slots.
+        if (!slots.length) { out.push(`Hmm, that day has no free slots left. Could you pick another date?` + bulletOptions('availdate', c, j)); ch.stage = 'availdate'; break; }
         const tm = parseTimeHour(text);
-        const lead = tm ? `Thanks! 🙂 Our recruiter calls run *between 11 AM and 5 PM*, so ${text.trim()} won't work — could you pick one of these?` : `No problem! Please pick a *time slot* for the call:`;
+        const lead = tm ? `Thanks! 🙂 That time isn't free — could you pick one of these open 30-min slots?` : `No problem! Please pick a *time slot* for the call:`;
         out.push(lead + bulletOptions('availtime', c, j));
         break;
       }
-      const start = new Date(ch.answers._dateISO || Date.now()); start.setHours(slot.start, 0, 0, 0);
-      ch.answers.scheduledStartISO = start.toISOString();
-      ch.answers.scheduledEndISO = new Date(start.getTime() + 15 * 60000).toISOString();
+      ch.answers.scheduledStartISO = slot.start.toISOString();
+      ch.answers.scheduledEndISO = new Date(slot.start.getTime() + CALL_MIN * 60000).toISOString();
       ch.answers.availability = `${ch.answers._dateLabel}, ${slot.label}`;
       confirmSchedule(c, ch, out);
       break;
@@ -850,7 +877,7 @@ function rulesUnderstand(c, ch, text) {
     case 'notice': return /\bserv(e|ing)?\b|on notice|notice running|notice going on/i.test(t) || detectNoticeDays(t) !== null || q;
     case 'resume': return true;                              // any text / "skip" recorded
     case 'avail': case 'availdate': return parseDateLoose(t) !== null || isFlexibleSchedule(t) || q;
-    case 'availtime': return matchTimeSlot(t) !== null || isFlexibleSchedule(t);
+    case 'availtime': return matchTimeSlot(t, ch.answers._dateISO) !== null || isFlexibleSchedule(t) || q;
     default: return true;
   }
 }
@@ -1078,8 +1105,8 @@ function eventDetailsCandidate(c, ch) {
 }
 // The call slot (30 min) from the candidate's stated availability.
 function callSlot(ch) {
-  if (ch.answers.scheduledStartISO) { const start = new Date(ch.answers.scheduledStartISO); const end = ch.answers.scheduledEndISO ? new Date(ch.answers.scheduledEndISO) : new Date(start.getTime() + 15 * 60000); return { start, end, uncertain: false }; }
-  const { start, uncertain } = parseAvailabilityToDate(ch.answers.availability); return { start, end: new Date(start.getTime() + 15 * 60000), uncertain };
+  if (ch.answers.scheduledStartISO) { const start = new Date(ch.answers.scheduledStartISO); const end = ch.answers.scheduledEndISO ? new Date(ch.answers.scheduledEndISO) : new Date(start.getTime() + CALL_MIN * 60000); return { start, end, uncertain: false }; }
+  const { start, uncertain } = parseAvailabilityToDate(ch.answers.availability); return { start, end: new Date(start.getTime() + CALL_MIN * 60000), uncertain };
 }
 // Build a Google Calendar "add event" link (pre-filled). No API/OAuth needed — works for anyone.
 function gcalLink(title, details, location, start, end) {
@@ -1618,7 +1645,7 @@ function pollForStage(stage, c, j) {
     case 'notice':     return { name: 'What is your notice period?', options: ['Immediate', '15 days', '30 days', '60 days', '90+ days', 'Currently serving notice'] };
     case 'avail':
     case 'availdate':  return { name: 'Which date works best for a quick call? 📅', options: availDateOptions().map(o => o.label) };
-    case 'availtime':  return { name: 'And which time slot suits you? 🕘', options: TIME_SLOTS.map(s => s.label) };
+    case 'availtime':  return { name: 'And which time slot suits you? 🕘', options: daySlots(new Date((c.wa && c.wa.answers && c.wa.answers._dateISO) || Date.now())).map(s => s.label) };
     default: return null;
   }
 }
