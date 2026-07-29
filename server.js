@@ -41,8 +41,8 @@ function fmtPhone(p) { const d = normPhone(p); return d ? '+' + d : ''; }
 const EXP = ['0-1 years', '1-3 years', '3-5 years', '5-8 years', '8+ years'];
 const ROLE = ['Individual Contributor', 'Team Lead / Senior', 'Manager', 'Fresher / Looking for first role', 'Other'];
 const TIME = ['Morning (9 AM - 12 PM)', 'Afternoon (12 PM - 3 PM)', 'Evening (3 PM - 6 PM)'];
-const STAGE_LABEL = { new: 'Not started', outreach: 'Outreach sent', details_form: 'Details form sent', location: 'Asked location', preflocation: 'Preferred location', workpref: 'Work preference', experience: 'Experience', role: 'Current role', currentctc: 'Current CTC', opentocity: 'Open to location', expectedctc: 'Expected CTC', notice: 'Notice period', skills: 'Skill questions', resume: 'Resume request', keepprofile: 'Asked to keep profile', reason: 'Asked why not interested', resurface: 'Resurface timing', avail: 'Scheduling', availdate: 'Scheduling', availtime: 'Scheduling', avail_time: 'Scheduling', avail_day: 'Scheduling', scheduled: 'Call scheduled ✓', declined: 'Not interested', location_dropout: 'Location mismatch', awaiting_role: 'Awaiting a role in their city', notice_dropout: 'Notice too long', pending_review: 'Pending recruiter review' };
-const isTerminal = s => ['scheduled', 'declined', 'location_dropout', 'awaiting_role', 'notice_dropout', 'pending_review'].includes(s);
+const STAGE_LABEL = { new: 'Not started', outreach: 'Outreach sent', details_form: 'Details form sent', location: 'Asked location', preflocation: 'Preferred location', workpref: 'Work preference', experience: 'Experience', role: 'Current role', currentctc: 'Current CTC', opentocity: 'Open to location', expectedctc: 'Expected CTC', notice: 'Notice period', skills: 'Skill questions', resume: 'Resume request', keepprofile: 'Asked to keep profile', reason: 'Asked why not interested', resurface: 'Resurface timing', availnow: 'Available-now check', awaiting_recruiter_now: 'Checking recruiter for instant call', await_recruiter_slot: 'Recruiter to suggest a time', avail: 'Scheduling', availdate: 'Scheduling', availtime: 'Scheduling', avail_time: 'Scheduling', avail_day: 'Scheduling', scheduled: 'Call scheduled ✓', declined: 'Not interested', location_dropout: 'Location mismatch', awaiting_role: 'Awaiting a role in their city', notice_dropout: 'Notice too long', pending_review: 'Pending recruiter review' };
+const isTerminal = s => ['scheduled', 'declined', 'location_dropout', 'awaiting_role', 'notice_dropout', 'pending_review', 'await_recruiter_slot'].includes(s);
 
 // Classify a job as Managerial (Senior Manager & above) or Individual Contributor, from its title.
 // Rule: "Senior … Manager" and above = Managerial; a plain Manager / Associate / IC title = IC.
@@ -412,6 +412,7 @@ function stagePrompt(stage, c, j) {
     case 'opentocity': return `Got it! And are you *open to ${j.location || 'the job location'}*?` + numberedOptions('opentocity', c, j);
     case 'notice': return `Almost there! What's your *notice period*?` + numberedOptions('notice', c, j);
     case 'resume': return `One last thing — do you have an *updated resume* you'd like to share, in *PDF or Word* format? 📄 You can attach it right here. If not, just say *"skip"* and we'll move on.`;
+    case 'availnow': return `Almost done! 🙌 Are you *available for a quick call right now*?` + numberedOptions('availnow', c, j);
     case 'avail':
     case 'availdate': return `Brilliant! 🎉 Let's set up your call. Which *date* works best for you?` + bulletOptions('availdate', c, j);
     case 'availtime': return `Great! And which *time slot* suits you?` + bulletOptions('availtime', c, j);
@@ -494,7 +495,30 @@ function addScreeningFlags(c, ch, j) {
 function proceedAfterScreening(c, ch, out) {
   const j = jobOf(c);
   addScreeningFlags(c, ch, j);
-  advance(c, ch, 'availdate', out);
+  const hr = new Date().getHours();
+  // During working hours, first offer an instant call; otherwise go straight to slots.
+  if (hr >= 9 && hr < 20) advance(c, ch, 'availnow', out);
+  else advance(c, ch, 'availdate', out);
+}
+// Candidate is available right now → ping the recruiter's WhatsApp to see if they can take it immediately.
+function askRecruiterNow(c, out) {
+  const ch = c.wa, j = jobOf(c);
+  if (db.recruiterPending) { advance(c, ch, 'availdate', out); return; }   // recruiter busy with another prompt → slots instead
+  ch.stage = 'awaiting_recruiter_now';
+  db.recruiterPending = { type: 'immediate_avail', candId: c.id }; save();
+  waSendRecruiter(`⚡ *${c.name}* (${j ? j.title : ''}) is available for a call *right now*. Can you take it? Reply *yes* or *no*.\n📱 ${c.phone}`);
+  out.push(`Perfect! ⏳ Let me quickly check if our recruiter is free right now — one moment…`);
+}
+// Candidate asked for a time outside our slots → flag it and ask the recruiter to suggest a time manually.
+function escalateSlotToRecruiter(c, ch, request, out) {
+  const j = jobOf(c);
+  ch.stage = 'await_recruiter_slot';
+  flagOnce(ch, 'slot', `📌 ${c.name} asked for a slot outside availability: "${request}". Recruiter to suggest a time manually.`);
+  const msg = `📌 *${c.name}* (${j ? j.title : ''}) asked for a time outside the available slots: *"${request}"*.\nPlease suggest a suitable time to them directly.\n📱 ${c.phone}`;
+  waSendRecruiter(msg);
+  try { if (mailerReady() && db.settings.recruiterEmail) sendEmail(db.settings.recruiterEmail, `📌 ${c.name} asked for a different slot`, stripMd(msg)).catch(() => {}); } catch (e) {}
+  if (c.fromSheet) writeCandidateToSheet(c);
+  out.push(`Thank you! 🙏 That's outside our standard slots, so I've flagged it to our recruiter — they'll reach out to suggest a suitable time.`);
 }
 // Called once the candidate's preferred location(s) are collected. If they weren't comfortable with the
 // role's office location, we don't screen further — we thank them, keep their profile, and park them in
@@ -722,6 +746,18 @@ function handleIncoming(c, ch, text, skipPush) {
       out.push(`I'll need the actual file to share with our team 🙂 Could you please attach your resume here as a *PDF or Word* document? Or just say *"skip"* if you don't have one handy.`);
       break;
     }
+    case 'availnow': {
+      const v = detectComfort(text);
+      if (v === 'yes') { askRecruiterNow(c, out); }
+      else if (v === 'no') { advance(c, ch, 'availdate', out); }
+      else { out.push(`Just a quick yes or no — are you free for a call right now?` + numberedOptions('availnow', c, j)); }
+      break;
+    }
+    case 'awaiting_recruiter_now': {
+      // Candidate messaged while we're still checking with the recruiter — acknowledge, keep waiting.
+      out.push(`Thanks! ⏳ I'm just confirming with our recruiter — I'll get right back to you.`);
+      break;
+    }
     case 'avail':         // legacy stage → treat as date selection
     case 'availdate': {
       if (questionLike(text) && !parseDateLoose(text) && !isFlexibleSchedule(text)) { askQuestion(c, ch, text, out); out.push(stagePrompt('availdate', c, j)); break; }
@@ -752,8 +788,9 @@ function handleIncoming(c, ch, text, skipPush) {
       if (!slot) {
         if (!slots.length) { out.push(`Hmm, that day has no free slots left. Could you pick another date?` + bulletOptions('availdate', c, j)); ch.stage = 'availdate'; break; }
         const tm = parseTimeHour(text);
-        const lead = tm ? `Thanks! 🙂 That time isn't free — could you pick one of these open 30-min slots?` : `No problem! Please pick a *time slot* for the call:`;
-        out.push(lead + bulletOptions('availtime', c, j));
+        // They asked for a specific time that isn't in our slots → escalate to the recruiter to suggest manually.
+        if (tm || detectUnavailable(text)) { escalateSlotToRecruiter(c, ch, `${ch.answers._dateLabel || ''} ${text.trim()}`.trim(), out); break; }
+        out.push(`No problem! Please pick a *time slot* for the call:` + bulletOptions('availtime', c, j));
         break;
       }
       ch.answers.scheduledStartISO = slot.start.toISOString();
@@ -886,6 +923,8 @@ function rulesUnderstand(c, ch, text) {
     case 'location': return true;                            // any text is taken as the city
     case 'currentctc': return true;                          // free-text CTC break-up captured as-is
     case 'opentocity': return detectComfort(t) !== null || q;
+    case 'availnow': return detectComfort(t) !== null || q;
+    case 'awaiting_recruiter_now': return true;
     case 'notice': return /\bserv(e|ing)?\b|on notice|notice running|notice going on/i.test(t) || detectNoticeDays(t) !== null || q;
     case 'resume': return true;                              // any text / "skip" recorded
     case 'avail': case 'availdate': return parseDateLoose(t) !== null || isFlexibleSchedule(t) || q;
@@ -1477,6 +1516,28 @@ async function handleRecruiterReply(text) {
   const c = db.candidates.find(x => x.id === p.candId);
   const yn = detectComfort(text);
   log(`👔 Recruiter replied "${text}" [${p.type}]`);
+  if (p.type === 'immediate_avail') {
+    db.recruiterPending = null;
+    if (!c) { save(); return true; }
+    if (yn === 'yes') {
+      c.wa.stage = 'scheduled'; c.wa.answers.availability = 'Immediate — recruiter calling within 30 min'; c.wa.answers.scheduledRecruiter = recruiterName(c);
+      c.wa.answers.scheduledStartISO = new Date().toISOString(); c.wa.answers.scheduledEndISO = new Date(Date.now() + CALL_MIN * 60000).toISOString(); c.wa.answers.followupAsked = false;
+      if (c.fromSheet) writeCandidateToSheet(c);
+      save();
+      await sendRepliesWA(c, [`🎉 Great news! Our recruiter will call you within the next *30 minutes*. Please keep your phone handy. 📞`]);
+      await waSendRecruiter(`👍 Told ${c.name} you'll call within 30 min.`);
+      return true;
+    }
+    if (yn === 'no') {
+      c.wa.stage = 'availdate'; save();
+      await sendRepliesWA(c, [`No worries at all! Our recruiter isn't free this very moment. Could you pick a slot for the call?` + bulletOptions('availdate', c, jobOf(c))]);
+      await waSendRecruiter(`👍 No problem — asked ${c.name} to pick a slot instead.`);
+      return true;
+    }
+    db.recruiterPending = { type: 'immediate_avail', candId: p.candId }; save();
+    await waSendRecruiter(`Reply *yes* (you'll call now) or *no* (candidate picks a slot).`);
+    return true;
+  }
   if (p.type === 'call_done') {
     if (yn === 'yes') { if (c) { c.wa.answers.conversationDone = 'Yes'; if (c.fromSheet) writeCandidateToSheet(c); } db.recruiterPending = null; save(); await waSendRecruiter('Great — marked as *done* in the sheet. ✅'); return true; }
     if (yn === 'no') { db.recruiterPending = { type: 'recheck_offer', candId: p.candId }; save(); await waSendRecruiter(`No worries. Want me to check with *${c ? c.name : 'the candidate'}* for a new slot? Reply *yes* or *no*.`); return true; }
@@ -1731,6 +1792,7 @@ function pollForStage(stage, c, j) {
   switch (stage) {
     case 'outreach':   return { name: `Are you open to exploring this ${j ? j.title : ''} opportunity? 😊`, options: ['Yes, tell me more 👍', 'Not right now'] };
     case 'opentocity': return { name: `Are you open to ${j ? j.location : 'the job location'}?`, options: ['Yes', 'No'] };
+    case 'availnow':   return { name: `Are you available for a quick call right now?`, options: ['Yes, I\'m free now', 'No, let\'s schedule'] };
     case 'notice':     return { name: 'What is your notice period?', options: ['Immediate', '15 days', '30 days', '60 days', '90+ days', 'Currently serving notice'] };
     case 'avail':
     case 'availdate':  return { name: 'Which date works best for a quick call? 📅', options: availDateOptions().map(o => o.label) };
@@ -1741,7 +1803,7 @@ function pollForStage(stage, c, j) {
 // Translate a chosen poll option back into text the conversation engine understands.
 function voteToAnswer(stage, optionName) {
   const o = optionName || '';
-  if (stage === 'outreach' || stage === 'opentocity') return /^yes/i.test(o) ? 'yes' : 'no';
+  if (stage === 'outreach' || stage === 'opentocity' || stage === 'availnow') return /^yes/i.test(o) ? 'yes' : 'no';
   if (stage === 'notice') {
     if (/serving/i.test(o)) return 'serving notice';
     return ({ 'Immediate': 'immediate', '15 days': '15 days', '30 days': '30 days', '60 days': '60 days', '90+ days': '90 days' })[o] || o;
