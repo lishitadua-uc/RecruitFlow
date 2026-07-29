@@ -1801,17 +1801,10 @@ async function sendWhatsAppOutreachTo(c, j, media) {
     if (media) { await new Promise(r => setTimeout(r, 600)); await waSend(jid2, media, { caption: `📄 ${j.title} — Job Description`, sendMediaAsDocument: true }); }
     c.wa.transcript.push({ from: 'system', text, ts: now() });
     if (media) c.wa.transcript.push({ from: 'system', text: `📄 [Sent JD attachment: ${j.jdFileName || j.jdFile}]`, ts: now() });
-    // Tappable interest poll (they can also just reply with text).
-    try {
-      const ip = pollForStage('outreach', c, j);
-      await new Promise(r => setTimeout(r, 600));
-      const pm = await waSend(jid2, new Poll(ip.name, ip.options, { allowMultipleAnswers: false }));
-      c.wa.chatId = c.wa.chatId || jid2; c.wa.activePoll = 'outreach'; c.wa.activePollMsgId = pm && pm.id ? pm.id._serialized : null;
-      // Mark "now" as processed so the catch-up sweep never replays this phone number's OLDER chat
-      // history (a prior conversation, a different candidate record, anything predating this outreach)
-      // as if it were a fresh reply to what we just sent.
-      c.wa.lastProcessedTs = Date.now();
-    } catch (e) { log('Interest poll failed for ' + c.name + ': ' + e.message); }
+    // No poll — the interest question + numbered options are already in the outreach text. Just pin the
+    // chat and mark "now" processed so the catch-up sweep never replays this number's OLDER chat history.
+    c.wa.chatId = c.wa.chatId || jid2;
+    c.wa.lastProcessedTs = Date.now();
     c.wa.lastMsgSentAt = now();
     if (c.fromSheet) writeCandidateToSheet(c);   // mark "contacted" + status in the sheet
     log(`  ✓ Sent to ${c.name} (+${normPhone(c.phone)})`);
