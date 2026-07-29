@@ -669,7 +669,7 @@ function handleIncoming(c, ch, text, skipPush) {
         out.push(`No worries at all! 🙂 Would you still like to go ahead with a call with the recruiter?`);
         break;
       }
-      if (!d) { out.push(`Please pick a *date* for the call. ${availDateOptions().map(o => '• ' + o.label).join('  ')}`); break; }
+      if (!d) { out.push(`No problem! 🙂 Could you pick one of these *dates* for the call?` + numberedOptions('availdate', c, j)); break; }
       ch.answers._dateISO = d.toISOString();
       ch.answers._dateLabel = fmtDateOpt(d);
       const slotSame = matchExplicitTimeSlot(text);   // only if they gave an explicit time too (e.g. "Friday 3 PM")
@@ -685,7 +685,13 @@ function handleIncoming(c, ch, text, skipPush) {
     case 'availtime': {
       // "anytime / you decide / flexible" → default to a mid-afternoon slot so scheduling doesn't stall.
       const slot = matchTimeSlot(text) || (isFlexibleSchedule(text) ? (TIME_SLOTS.find(s => s.start === 15) || TIME_SLOTS[0]) : null);
-      if (!slot) { out.push(`Please pick a *time slot*: ${TIME_SLOTS.map(s => s.label).join('  •  ')}`); break; }
+      if (!slot) {
+        // They named a time, but it's outside our call hours — acknowledge it warmly, then re-offer the slots.
+        const tm = parseTimeHour(text);
+        const lead = tm ? `Thanks! 🙂 Our recruiter calls run *between 11 AM and 5 PM*, so ${text.trim()} won't work — could you pick one of these?` : `No problem! Please pick a *time slot* for the call:`;
+        out.push(lead + numberedOptions('availtime', c, j));
+        break;
+      }
       const start = new Date(ch.answers._dateISO || Date.now()); start.setHours(slot.start, 0, 0, 0);
       ch.answers.scheduledStartISO = start.toISOString();
       ch.answers.scheduledEndISO = new Date(start.getTime() + 15 * 60000).toISOString();
