@@ -1050,12 +1050,20 @@ async function writeCandidateToSheet(c) {
     let maxCol = Math.max(...Object.values(idx));
     const newHeaders = [];
     for (const col of Object.keys(map)) { if (idx[col] == null) { idx[col] = ++maxCol; newHeaders.push({ range: `${SHEET_TAB}!${colLetter(idx[col])}1`, values: [[col]] }); } }
+    if (newHeaders.length) await ensureSheetColumns(api, maxCol + 1);   // grow the grid so new columns don't exceed its limit
     const data = newHeaders.slice();
     for (const [col, val] of Object.entries(map)) data.push({ range: `${SHEET_TAB}!${colLetter(idx[col])}${c.sheetRow}`, values: [[val]] });
     db.settings._sheetIdx = idx;
     if (data.length) await api.spreadsheets.values.batchUpdate({ spreadsheetId: db.settings.sheetId, requestBody: { valueInputOption: 'RAW', data } });
     updateSummaryTab().catch(() => {});
   } catch (e) { log('Sheet write-back failed for ' + (c && c.name) + ': ' + e.message); }
+}
+// Grow the sheet's column grid if we need more columns than it currently has (avoids "exceeds grid limits").
+async function ensureSheetColumns(api, needCols) {
+  const meta = await api.spreadsheets.get({ spreadsheetId: db.settings.sheetId });
+  const sh = meta.data.sheets.find(s => s.properties.title === SHEET_TAB); if (!sh) return;
+  const cur = (sh.properties.gridProperties && sh.properties.gridProperties.columnCount) || 0;
+  if (needCols > cur) await api.spreadsheets.batchUpdate({ spreadsheetId: db.settings.sheetId, requestBody: { requests: [{ appendDimension: { sheetId: sh.properties.sheetId, dimension: 'COLUMNS', length: needCols - cur + 2 } }] } });
 }
 // Ensure a job exists for this role+city (auto-derived from the sheet — no manual job creation).
 function jobForRole(title, location, recruiterName) {
@@ -1503,7 +1511,12 @@ if (!process.env.RF_TEST) { setInterval(() => checkDayOfReminders().catch(() => 
 const recruiterSentIds = new Set();   // ids of nudges the bot sent to the recruiter's self-chat (so we don't read them back)
 async function waSendRecruiter(text) {
   const to = recruiterWaId(); if (!to) return;
-  try { const pm = await waSend(to, text); const id = pm && pm.id && pm.id._serialized; if (id) recruiterSentIds.add(id); }
+  try {
+    const pm = await waSend(to, text);
+    const id = pm && pm.id && pm.id._serialized; if (id) recruiterSentIds.add(id);
+    // Learn the recruiter's ACTUAL chat id from our own sent message (WhatsApp may use an @lid form, not <num>@c.us).
+    const remote = pm && pm.id && pm.id.remote; if (remote) db._recruiterChatId = remote;
+  }
   catch (e) { log('Recruiter WA send failed: ' + e.message); }
 }
 // A recruiter reply is a short, single-line message (yes / no / "Tue afternoon") — not one of our long nudges.
@@ -1595,12 +1608,15 @@ function registerRecruiterSelfChat() {
   client.on('message_create', async msg => {
     try {
       if (!msg.fromMe || waStatus !== 'ready') return;
-      const selfId = waInfo ? waInfo + '@c.us' : null; if (!selfId) return;
-      const chat = (msg.id && msg.id.remote) || msg.to || msg.from;
-      if (chat !== selfId) return;                      // only the recruiter's self-chat
-      const id = msg.id && msg.id._serialized; if (id && recruiterSentIds.has(id)) return;   // skip our own nudges
       if (!db.recruiterPending) return;                 // only when we've asked the recruiter something
-      const text = (msg.body || '').trim(); if (!text) return;
+      const id = msg.id && msg.id._serialized; if (id && recruiterSentIds.has(id)) return;   // skip our own nudges
+      const chat = (msg.id && msg.id.remote) || msg.to || msg.from || '';
+      // Match the recruiter's self-chat: prefer the id we learned from our own nudge, else the plain <num>@c.us.
+      const target = db._recruiterChatId || (waInfo ? waInfo + '@c.us' : '');
+      const isSelfChat = (target && chat === target) || (waInfo && chat === waInfo + '@c.us');
+      if (!isSelfChat) return;
+      const text = (msg.body || '').trim(); if (!text || !looksLikeRecruiterReply(text)) return;
+      log(`👔 Recruiter self-chat reply: "${text}"`);
       await handleRecruiterReply(text);
     } catch (e) { log('recruiter self-chat error: ' + e.message); }
   });
