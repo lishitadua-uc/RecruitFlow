@@ -972,10 +972,13 @@ async function syncFromSheet() {
     const rawPhone = (row[idx.phone] || '').toString().trim(); if (!rawPhone) continue;
     const phone = fmtPhone(rawPhone);
     const sheetRow = i + 1;
-    // 90-day guardrail: skip if we already messaged this candidate on WhatsApp within 90 days.
-    const lastContact = row[idx.last_message_sent_at] || row[idx.last_candidate_reply_at] || '';
-    const lastMs = lastContact ? Date.parse(lastContact) : 0;
-    if (lastMs && (Date.now() - lastMs) < NINETY) { skippedRecent++; continue; }
+    // 90-day guardrail: skip only if WE actually reached out on WhatsApp within 90 days (tracked in
+    // RecruitFlow) — NOT the sheet's sourcing timestamps, which don't mean a WhatsApp message was sent.
+    const prior = db.candidates.find(x => last10(x.phone) === last10(phone) && (x.wa.outreachSentAt || x.wa.lastMsgSentAt));
+    if (prior) {
+      const t = prior.wa.outreachSentAt || Date.parse(prior.wa.lastMsgSentAt || '') || 0;
+      if (t && (Date.now() - t) < NINETY) { if (prior.fromSheet) prior.sheetRow = sheetRow; skippedRecent++; continue; }
+    }
     const existing = db.candidates.find(x => last10(x.phone) === last10(phone) && x.fromSheet);
     if (existing) { existing.sheetRow = sheetRow; skippedExisting++; continue; }
     const j = jobForRole(row[idx.level], row[idx.city], row[idx.recruiter_name]);
