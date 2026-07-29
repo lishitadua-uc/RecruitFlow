@@ -505,7 +505,7 @@ function askRecruiterNow(c, out) {
   const ch = c.wa, j = jobOf(c);
   if (db.recruiterPending) { advance(c, ch, 'availdate', out); return; }   // recruiter busy with another prompt → slots instead
   ch.stage = 'awaiting_recruiter_now';
-  db.recruiterPending = { type: 'immediate_avail', candId: c.id }; save();
+  db.recruiterPending = { type: 'immediate_avail', candId: c.id, askedAt: Date.now() }; save();
   waSendRecruiter(`⚡ *${c.name}* (${j ? j.title : ''}) is available for a call *right now*. Can you take it? Reply *yes* or *no*.\n📱 ${c.phone}`);
   out.push(`Perfect! ⏳ Let me quickly check if our recruiter is free right now — one moment…`);
 }
@@ -1515,12 +1515,23 @@ async function checkPostCall() {
     const ch = c.wa; if (!ch || ch.stage !== 'scheduled' || ch.answers.followupAsked) continue;
     const endISO = ch.answers.scheduledEndISO || ch.answers.scheduledStartISO; if (!endISO) continue;
     if (Date.now() < new Date(endISO).getTime() + 60 * 60000) continue;   // wait until 1hr after the call
-    ch.answers.followupAsked = true; db.recruiterPending = { type: 'call_done', candId: c.id }; save();
+    ch.answers.followupAsked = true; db.recruiterPending = { type: 'call_done', candId: c.id, askedAt: Date.now() }; save();
     await waSendRecruiter(`👋 Did your call with *${c.name}* (${(jobOf(c) || {}).title || ''}) happen? Reply *yes* or *no*.`);
     break;
   }
 }
 if (!process.env.RF_TEST) setInterval(() => { checkPostCall().catch(() => {}); }, 10 * 60 * 1000);
+// Safety: never let an unanswered recruiter prompt block the queue or strand a candidate.
+async function checkRecruiterTimeout() {
+  const p = db.recruiterPending; if (!p) return;
+  const age = Date.now() - (p.askedAt || 0);
+  if (p.type === 'immediate_avail' && age > 10 * 60000) {
+    // Recruiter didn't respond to the instant-call ping in 10 min → send the candidate to normal slots.
+    const c = db.candidates.find(x => x.id === p.candId); db.recruiterPending = null; save();
+    if (c && c.wa.stage === 'awaiting_recruiter_now') { c.wa.stage = 'availdate'; save(); try { await sendRepliesWA(c, [`Thanks for waiting! 🙂 Let's just pick a convenient slot for your call:` + bulletOptions('availdate', c, jobOf(c))]); } catch (e) {} }
+  } else if (age > 12 * 3600000) { db.recruiterPending = null; save(); }   // stale >12h → unblock the queue
+}
+if (!process.env.RF_TEST) setInterval(() => { checkRecruiterTimeout().catch(() => {}); }, 2 * 60 * 1000);
 // Recruiter's answer to whatever we last asked — drives the post-call + re-schedule flow.
 async function handleRecruiterReply(text) {
   const p = db.recruiterPending; if (!p) return false;
@@ -1534,6 +1545,7 @@ async function handleRecruiterReply(text) {
     if (yn === 'yes') {
       c.wa.stage = 'scheduled'; c.wa.answers.availability = 'Immediate — recruiter calling within 30 min'; c.wa.answers.scheduledRecruiter = recruiterName(c);
       c.wa.answers.scheduledStartISO = new Date().toISOString(); c.wa.answers.scheduledEndISO = new Date(Date.now() + CALL_MIN * 60000).toISOString(); c.wa.answers.followupAsked = false;
+      c.wa.calendarDone = false; onScheduled(c, c.wa);   // block the next 30 min on the recruiter's calendar
       if (c.fromSheet) writeCandidateToSheet(c);
       save();
       await sendRepliesWA(c, [`🎉 Great news! Our recruiter will call you within the next *30 minutes*. Please keep your phone handy. 📞`]);
