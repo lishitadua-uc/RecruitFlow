@@ -1461,15 +1461,16 @@ async function sendRepliesWA(c, replies) {
   // A pending sub-state (e.g. "what's your last working day?") always expects free text, even if the
   // underlying stage itself is normally poll-driven — don't re-fire that stage's poll while one is open.
   const poll = ch.pending ? null : pollForStage(ch.stage, c, j);
-  const promptText = poll ? stripMd(stagePrompt(ch.stage, c, j)) : null;
+  // TEXT-FIRST: always send the question as plain text so the conversation can NEVER stall — even if
+  // WhatsApp rejects the poll (e.g. the "No LID for user" issue on some accounts). The poll is then a
+  // best-effort tappable bonus on top; a text reply advances the flow regardless of whether it sent.
   for (const r of (replies || [])) {
-    if (poll && stripMd(r) === promptText) continue;        // skip the text prompt; the poll replaces it
     try { await waSend(to, r); } catch (e) { log('WA send failed: ' + e.message); }
     await new Promise(r => setTimeout(r, 600));
   }
   if (poll && ch.activePoll !== ch.stage) {
     try { const pm = await waSend(to, new Poll(poll.name, poll.options, { allowMultipleAnswers: false })); ch.activePoll = ch.stage; ch.activePollMsgId = pm && pm.id ? pm.id._serialized : null; save(); }
-    catch (e) { log('Poll send failed (' + e.message + ') — falling back to text.'); try { await waSend(to, stripMd(stagePrompt(ch.stage, c, j))); } catch (e2) {} }
+    catch (e) { log('Poll (bonus) failed — text already sent, conversation continues: ' + e.message); }
   }
 }
 
