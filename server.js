@@ -514,12 +514,24 @@ function afterPreferredLocation(c, ch, out) {
 function advance(c, ch, stage, out) { ch.stage = stage; out.push(stagePrompt(stage, c, jobOf(c))); }
 function confirmSchedule(c, ch, out) {
   ch.stage = 'scheduled';
+  ch.answers.scheduledRecruiter = recruiterName(c);
+  ch.answers.followupAsked = false;   // reset so the post-call "did it happen?" fires once
   onScheduled(c, ch);   // build calendar links + email invites to both parties
   const link = ch.answers.candidateCalendarLink;
   const rec = recruiterName(c);
   out.push(`Wonderful! 🎉 Your call has been scheduled for *${ch.answers.availability}*. You'll receive a calendar invite shortly — please do accept it.` + (link ? `\n\n📅 Add this call to your calendar: ${link}` : ''));
   out.push(`Thank you ${c.name} for your time & for sharing all the required details. I'll now pass on your information to *${rec}* from ${db.company}'s TA team. Should you be shortlisted, team will reach out to you directly. 🙏`);
+  notifyRecruiterScheduled(c, ch);   // WhatsApp + email the recruiter
 }
+// On booking, tell the recruiter (their own WhatsApp + email) who's scheduled and when.
+function notifyRecruiterScheduled(c, ch) {
+  const j = jobOf(c), when = ch.answers.availability || '';
+  const msg = `📅 *Call scheduled* — *${c.name}* (${j ? j.title : ''}${j && j.location ? ', ' + j.location : ''})\n🕘 ${when}\n📱 ${c.phone}\n\nIt's on your calendar; please accept the invite.`;
+  try { const to = recruiterWaId(); if (to) waSend(to, msg).catch(() => {}); } catch (e) {}
+  try { if (mailerReady() && db.settings.recruiterEmail) sendEmail(db.settings.recruiterEmail, `📅 Call scheduled: ${c.name} — ${when}`, stripMd(msg)).catch(() => {}); } catch (e) {}
+}
+// The recruiter's own WhatsApp chat id — their logged-in number, else the linked device number.
+function recruiterWaId() { const p = db.settings.recruiterPhone ? normPhone(db.settings.recruiterPhone) : waInfo; return p ? p + '@c.us' : null; }
 // Recruiter name for closings — the recruiter assigned in the sheet for this candidate takes priority,
 // then the recruiter logged in on this device, then a safe default.
 function recruiterName(c) { const j = jobOf(c); return (c && c.recruiterName) || (j && j.recruiterName) || db.settings.recruiterName || 'our recruiter'; }
@@ -983,6 +995,9 @@ function sheetWriteMap(c) {
     last_message_sent_at: c.wa.lastMsgSentAt || '',
     last_candidate_reply_at: c.wa.lastReplyAt || '',
     follow_up_count: String(c.wa.nudgeCount || 0),
+    scheduled_slot: a.availability || '',
+    assigned_recruiter: a.scheduledRecruiter || c.recruiterName || '',
+    conversation_done: a.conversationDone || '',
   };
 }
 // Write a candidate's answers back to their row in the sheet (only if it came from the sheet).
@@ -990,13 +1005,15 @@ async function writeCandidateToSheet(c) {
   try {
     if (!c || !c.sheetRow) return;
     const api = await sheetsApi(); if (!api) return;
-    const idx = db.settings._sheetIdx; if (!idx) return;
+    let idx = db.settings._sheetIdx; if (!idx) return;
     const map = sheetWriteMap(c);
-    const data = [];
-    for (const [col, val] of Object.entries(map)) {
-      if (idx[col] == null) continue;
-      data.push({ range: `${SHEET_TAB}!${colLetter(idx[col])}${c.sheetRow}`, values: [[val]] });
-    }
+    // Auto-create any missing columns (e.g. scheduled_slot / assigned_recruiter / conversation_done).
+    let maxCol = Math.max(...Object.values(idx));
+    const newHeaders = [];
+    for (const col of Object.keys(map)) { if (idx[col] == null) { idx[col] = ++maxCol; newHeaders.push({ range: `${SHEET_TAB}!${colLetter(idx[col])}1`, values: [[col]] }); } }
+    const data = newHeaders.slice();
+    for (const [col, val] of Object.entries(map)) data.push({ range: `${SHEET_TAB}!${colLetter(idx[col])}${c.sheetRow}`, values: [[val]] });
+    db.settings._sheetIdx = idx;
     if (data.length) await api.spreadsheets.values.batchUpdate({ spreadsheetId: db.settings.sheetId, requestBody: { valueInputOption: 'RAW', data } });
     updateSummaryTab().catch(() => {});
   } catch (e) { log('Sheet write-back failed for ' + (c && c.name) + ': ' + e.message); }
