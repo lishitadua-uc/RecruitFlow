@@ -1071,11 +1071,23 @@ async function syncFromSheet() {
   const need = ['name', 'phone', 'rating', 'level', 'city', 'recruiter_name'];
   for (const k of need) if (idx[k] == null) throw new Error(`Sheet is missing a "${k}" column.`);
   const NINETY = 90 * 24 * 60 * 60 * 1000;
-  let added = 0, skippedRecent = 0, skippedExisting = 0, notStrong = 0;
+  // Only handle candidates the sheet assigns to THIS logged-in recruiter (matched by email first, then name).
+  const myEmail = (db.settings.recruiterEmail || '').trim().toLowerCase();
+  const myName = (db.settings.recruiterName || '').trim().toLowerCase();
+  if (!myEmail && !myName) throw new Error('Please log in (recruiter name + email) before syncing.');
+  const rowIsMine = row => {
+    const rn = (row[idx.recruiter_name] || '').trim().toLowerCase();
+    const re = (idx.recruiter_email != null ? (row[idx.recruiter_email] || '').trim().toLowerCase() : '');
+    if (myEmail && re) return re === myEmail;                       // email is the reliable key
+    if (myName && rn) return rn === myName || rn.includes(myName) || myName.includes(rn);
+    return false;
+  };
+  let added = 0, skippedRecent = 0, skippedExisting = 0, notStrong = 0, skippedOther = 0;
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i]; if (!row || !row.length) continue;
     const rating = (row[idx.rating] || '').trim().toLowerCase();
     if (rating !== 'strong') { notStrong++; continue; }
+    if (!rowIsMine(row)) { skippedOther++; continue; }             // assigned to a different recruiter → their copy handles it
     const rawPhone = (row[idx.phone] || '').toString().trim(); if (!rawPhone) continue;
     const phone = fmtPhone(rawPhone);
     const sheetRow = i + 1;
@@ -1094,8 +1106,8 @@ async function syncFromSheet() {
     db.candidates.push(c); added++;
   }
   save();
-  log(`📥 Sheet sync: ${added} added, ${skippedRecent} skipped (contacted <90d), ${skippedExisting} already imported.`);
-  return { added, skippedRecent, skippedExisting, notStrong };
+  log(`📥 Sheet sync (${db.settings.recruiterName || '?'}): ${added} added, ${skippedRecent} skipped (contacted <90d), ${skippedExisting} already imported, ${skippedOther} for other recruiters.`);
+  return { added, skippedRecent, skippedExisting, notStrong, skippedOther };
 }
 // Rebuild the "Conversation Summary" tab: one row per sheet candidate with every answer + status.
 async function updateSummaryTab() {
@@ -1713,6 +1725,7 @@ if (db.settings.autoSync === undefined) db.settings.autoSync = true;
 let _autoRunning = false;
 async function autoSyncAndRun() {
   if (_autoRunning || !db.settings.autoSync || waStatus !== 'ready') return;
+  if (!db.settings.recruiterName && !db.settings.recruiterEmail) return;   // not logged in yet — nothing to attribute
   _autoRunning = true;
   try {
     const res = await syncFromSheet();               // pull Strong (auto role+city, 90-day skip) → data.json + sheet idx — runs anytime

@@ -179,7 +179,7 @@ async function syncSheet(){
   const btn=event&&event.target; if(btn){btn.disabled=true;btn.textContent='Syncing…';}
   const r=await api('POST','/api/sheet/sync');
   if(r.error){toast('⚠️ '+r.error);}
-  else toast(`📥 Synced: ${r.added} added, ${r.skippedRecent} skipped (contacted <90d), ${r.skippedExisting} already imported.`);
+  else toast(`📥 Synced: ${r.added} added for you, ${r.skippedRecent} skipped (contacted <90d), ${r.skippedOther||0} for other recruiters.`);
   await reload(); render();
 }
 function jobCard(j){const list=candsOf(j.id);const sched=list.filter(c=>c.wa.stage==='scheduled'||(c.em&&c.em.stage==='scheduled')).length;
