@@ -1721,7 +1721,7 @@ async function waIsRegistered(jid) { try { return await client.isRegisteredUser(
 client.on('qr', async qr => { clearWatchdog(); waStatus = 'qr'; qrDataUrl = await QRCode.toDataURL(qr, { width: 320, margin: 1 }); log('QR generated — scan it from the dashboard.'); });
 client.on('authenticated', () => { waStatus = 'authenticated'; });
 client.on('auth_failure', m => { clearWatchdog(); waStatus = 'auth_failure'; log('Auth failure: ' + m); });
-client.on('ready', () => { clearWatchdog(); waStatus = 'ready'; qrDataUrl = null; waInfo = client.info ? client.info.wid.user : null; log('WhatsApp READY. Connected as +' + (waInfo || '?')); setTimeout(() => catchUpWhatsApp(), 4000); });
+client.on('ready', () => { clearWatchdog(); waStatus = 'ready'; qrDataUrl = null; waInfo = client.info ? client.info.wid.user : null; log('WhatsApp READY. Connected as +' + (waInfo || '?')); setTimeout(() => catchUpWhatsApp(), 4000); setTimeout(() => { if (typeof autoSyncAndRun === 'function') autoSyncAndRun().catch(() => {}); }, 8000); });
 registerRecruiterSelfChat();
 client.on('disconnected', r => {
   waStatus = 'disconnected'; log('Disconnected: ' + r + ' — attempting to reconnect.');
@@ -2122,7 +2122,11 @@ app.post('/api/settings', (req, res) => {
   if (b.recruiterPhone !== undefined) db.settings.recruiterPhone = fmtPhone(b.recruiterPhone);
   if (b.recruiterEmail !== undefined) db.settings.recruiterEmail = (b.recruiterEmail || '').trim();
   if (b.aiModel !== undefined) db.settings.aiModel = (b.aiModel || '').trim() || 'claude-opus-4-8';
-  save(); res.json({ ok: true });
+  save();
+  // As soon as a recruiter logs in (name/email set), kick off a sync+run immediately so their assigned
+  // candidates start right away — no waiting for the next 1-minute cycle. (Self-guards on WhatsApp ready.)
+  if ((b.recruiterName || b.recruiterEmail) && typeof autoSyncAndRun === 'function') setTimeout(() => autoSyncAndRun().catch(() => {}), 1500);
+  res.json({ ok: true });
 });
 app.post('/api/email/test', async (req, res) => { try { if (!mailerReady()) throw new Error('Add email + app password first.'); await sendEmail(db.settings.email, 'RecruitFlow test ✅', 'Your RecruitFlow email is configured correctly.'); emailStatus = 'ok'; res.json({ ok: true }); } catch (e) { emailStatus = 'error'; res.status(400).json({ error: e.message }); } });
 // Test lab: run a sample candidate message through the same brain WITHOUT touching real candidates.
