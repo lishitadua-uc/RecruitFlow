@@ -527,7 +527,7 @@ function confirmSchedule(c, ch, out) {
 function notifyRecruiterScheduled(c, ch) {
   const j = jobOf(c), when = ch.answers.availability || '';
   const msg = `📅 *Call scheduled* — *${c.name}* (${j ? j.title : ''}${j && j.location ? ', ' + j.location : ''})\n🕘 ${when}\n📱 ${c.phone}\n\nIt's on your calendar; please accept the invite.`;
-  try { const to = recruiterWaId(); if (to) waSend(to, msg).catch(() => {}); } catch (e) {}
+  waSendRecruiter(msg);
   try { if (mailerReady() && db.settings.recruiterEmail) sendEmail(db.settings.recruiterEmail, `📅 Call scheduled: ${c.name} — ${when}`, stripMd(msg)).catch(() => {}); } catch (e) {}
 }
 // The recruiter's own WhatsApp chat id — their logged-in number, else the linked device number.
@@ -1439,9 +1439,7 @@ async function checkDayOfReminders() {
       if (!c.dnc) {
         await waSend(ch.chatId || (normPhone(c.phone) + '@c.us'), `Hi ${c.name}! 👋 Just a friendly reminder — your call with the *${db.company}* recruiter is *today at ${timeLabel}*. Please keep your phone handy, and all the best! 😊📞`);
       }
-      if (waInfo) {
-        await waSend(waInfo + '@c.us', `🔔 Reminder: call with *${c.name}* (${j ? j.title : ''}) today at *${timeLabel}*.\n📱 ${c.phone}`);
-      }
+      await waSendRecruiter(`🔔 Reminder: call with *${c.name}* (${j ? j.title : ''}) today at *${timeLabel}*.\n📱 ${c.phone}`);
       ch.answers.reminderSent = true;
       save();
       log(`🔔 Day-of reminder sent for ${c.name}'s ${timeLabel} call.`);
@@ -1449,6 +1447,79 @@ async function checkDayOfReminders() {
   }
 }
 if (!process.env.RF_TEST) { setInterval(() => checkDayOfReminders().catch(() => {}), 30 * 60 * 1000); setTimeout(() => checkDayOfReminders().catch(() => {}), 90000); }
+
+/* ---------------- Recruiter-side conversation (bot ↔ recruiter over their own WhatsApp) ---------------- */
+const recruiterSentIds = new Set();   // ids of nudges the bot sent to the recruiter's self-chat (so we don't read them back)
+async function waSendRecruiter(text) {
+  const to = recruiterWaId(); if (!to) return;
+  try { const pm = await waSend(to, text); const id = pm && pm.id && pm.id._serialized; if (id) recruiterSentIds.add(id); }
+  catch (e) { log('Recruiter WA send failed: ' + e.message); }
+}
+// A recruiter reply is a short, single-line message (yes / no / "Tue afternoon") — not one of our long nudges.
+function looksLikeRecruiterReply(text) { return text && text.length <= 60 && !/\n/.test(text) && !/📅|🔔|👋 Did your call/.test(text); }
+// 1 hour after a scheduled call ends, ask the recruiter (on WhatsApp) whether it actually happened.
+async function checkPostCall() {
+  if (waStatus !== 'ready' || db.recruiterPending) return;   // one recruiter question at a time
+  for (const c of db.candidates) {
+    const ch = c.wa; if (!ch || ch.stage !== 'scheduled' || ch.answers.followupAsked) continue;
+    const endISO = ch.answers.scheduledEndISO || ch.answers.scheduledStartISO; if (!endISO) continue;
+    if (Date.now() < new Date(endISO).getTime() + 60 * 60000) continue;   // wait until 1hr after the call
+    ch.answers.followupAsked = true; db.recruiterPending = { type: 'call_done', candId: c.id }; save();
+    await waSendRecruiter(`👋 Did your call with *${c.name}* (${(jobOf(c) || {}).title || ''}) happen? Reply *yes* or *no*.`);
+    break;
+  }
+}
+if (!process.env.RF_TEST) setInterval(() => { checkPostCall().catch(() => {}); }, 10 * 60 * 1000);
+// Recruiter's answer to whatever we last asked — drives the post-call + re-schedule flow.
+async function handleRecruiterReply(text) {
+  const p = db.recruiterPending; if (!p) return false;
+  if (!looksLikeRecruiterReply(text)) return false;
+  const c = db.candidates.find(x => x.id === p.candId);
+  const yn = detectComfort(text);
+  log(`👔 Recruiter replied "${text}" [${p.type}]`);
+  if (p.type === 'call_done') {
+    if (yn === 'yes') { if (c) { c.wa.answers.conversationDone = 'Yes'; if (c.fromSheet) writeCandidateToSheet(c); } db.recruiterPending = null; save(); await waSendRecruiter('Great — marked as *done* in the sheet. ✅'); return true; }
+    if (yn === 'no') { db.recruiterPending = { type: 'recheck_offer', candId: p.candId }; save(); await waSendRecruiter(`No worries. Want me to check with *${c ? c.name : 'the candidate'}* for a new slot? Reply *yes* or *no*.`); return true; }
+    await waSendRecruiter('Please reply *yes* or *no* — did the call happen?'); return true;
+  }
+  if (p.type === 'recheck_offer') {
+    if (yn === 'yes') { db.recruiterPending = { type: 'recruiter_pref', candId: p.candId }; save(); await waSendRecruiter(`Any specific time you'd prefer for the new call? (e.g. "Tue afternoon" — or reply *any*)`); return true; }
+    if (yn === 'no') { if (c) { c.wa.answers.conversationDone = 'No — not rescheduled'; if (c.fromSheet) writeCandidateToSheet(c); } db.recruiterPending = null; save(); await waSendRecruiter('Okay, closed for now. 👍'); return true; }
+    await waSendRecruiter('Reply *yes* or *no* — should I re-check with the candidate?'); return true;
+  }
+  if (p.type === 'recruiter_pref') {
+    const pref = /^(any|anytime|no ?pref|whenever)/i.test(text) ? '' : text.trim();
+    db.recruiterPending = null; save();
+    if (c) reopenScheduling(c, pref);
+    await waSendRecruiter(`Done — I've asked *${c ? c.name : 'the candidate'}* to share availability${pref ? ` around *${pref}*` : ''}. I'll update you once they pick. 🙌`);
+    return true;
+  }
+  return false;
+}
+// Re-open scheduling for a candidate (recruiter asked to reschedule); slots still align to the calendar.
+function reopenScheduling(c, pref) {
+  const ch = c.wa, j = jobOf(c);
+  ch.answers.scheduledStartISO = null; ch.answers.scheduledEndISO = null; ch.answers.availability = null; ch.answers.reminderSent = false; ch.answers.followupAsked = false; ch.answers.recruiterPref = pref || '';
+  ch.stage = 'availdate';
+  const prompt = `Hi ${c.name}! 👋 We'd like to set up your call with our recruiter${pref ? ` — they'd prefer *${pref}*` : ''}. Which *date* works best for you?` + bulletOptions('availdate', c, j);
+  ch.transcript.push({ from: 'system', text: prompt, ts: now() });
+  sendRepliesWA(c, [prompt]).catch(() => {});
+}
+// Catch the recruiter's own typed messages in their self-chat (registered after the client is created — see below).
+function registerRecruiterSelfChat() {
+  client.on('message_create', async msg => {
+    try {
+      if (!msg.fromMe || waStatus !== 'ready') return;
+      const selfId = waInfo ? waInfo + '@c.us' : null; if (!selfId) return;
+      const chat = (msg.id && msg.id.remote) || msg.to || msg.from;
+      if (chat !== selfId) return;                      // only the recruiter's self-chat
+      const id = msg.id && msg.id._serialized; if (id && recruiterSentIds.has(id)) return;   // skip our own nudges
+      if (!db.recruiterPending) return;                 // only when we've asked the recruiter something
+      const text = (msg.body || '').trim(); if (!text) return;
+      await handleRecruiterReply(text);
+    } catch (e) { log('recruiter self-chat error: ' + e.message); }
+  });
+}
 
 let emailPolling = false;
 // Automated / calendar / no-reply emails that must NEVER be treated as a candidate reply.
@@ -1551,6 +1622,7 @@ client.on('qr', async qr => { clearWatchdog(); waStatus = 'qr'; qrDataUrl = awai
 client.on('authenticated', () => { waStatus = 'authenticated'; });
 client.on('auth_failure', m => { clearWatchdog(); waStatus = 'auth_failure'; log('Auth failure: ' + m); });
 client.on('ready', () => { clearWatchdog(); waStatus = 'ready'; qrDataUrl = null; waInfo = client.info ? client.info.wid.user : null; log('WhatsApp READY. Connected as +' + (waInfo || '?')); setTimeout(() => catchUpWhatsApp(), 4000); });
+registerRecruiterSelfChat();
 client.on('disconnected', r => {
   waStatus = 'disconnected'; log('Disconnected: ' + r + ' — attempting to reconnect.');
   // A LOGOUT / CONFLICT means the saved session is dead — reusing it just loops QR codes forever.
@@ -1741,6 +1813,10 @@ client.on('message', async msg => {
     if (['call_log', 'e2e_notification', 'notification_template', 'gp2', 'group_notification', 'broadcast_notification'].includes(msg.type)) return;
     if (!msg.body && !msg.hasMedia) return;
     const num = await resolveNumber(msg);
+    // If the recruiter uses a SEPARATE number (not the linked device), route their reply to the recruiter flow.
+    if (db.recruiterPending && db.settings.recruiterPhone && last10(db.settings.recruiterPhone) !== last10(waInfo || '') && last10(num) === last10(db.settings.recruiterPhone)) {
+      if (await handleRecruiterReply((msg.body || '').trim())) return;
+    }
     // Diagnostics: show exactly what WhatsApp exposes about the sender.
     const diag = { from: msg.from };
     try { const ct = await msg.getContact(); diag.id = ct && ct.id && ct.id._serialized; diag.number = ct && ct.number; diag.name = ct && (ct.pushname || ct.name); } catch (e) { diag.err = e.message; }
@@ -1847,7 +1923,7 @@ client.on('vote_update', async (vote) => {
   } catch (e) { log('vote handler error: ' + e.message); }
 });
 if (!process.env.RF_TEST) startWhatsApp();
-module.exports = { detectInterest, detectComfort, detectExperience, detectRole, detectSlot, detectDay, handleIncoming, autoMatchAwaitingCandidates, locationMatches, mkCand, syncFromSheet, writeCandidateToSheet, updateSummaryTab, readSheetTab, db };
+module.exports = { detectInterest, detectComfort, detectExperience, detectRole, detectSlot, detectDay, handleIncoming, autoMatchAwaitingCandidates, locationMatches, mkCand, syncFromSheet, writeCandidateToSheet, updateSummaryTab, readSheetTab, handleRecruiterReply, reopenScheduling, db };
 
 /* ---------------- Send outreach (RUN) ---------------- */
 // Send WhatsApp outreach to ONE candidate. Throws on failure. media is optional (loaded once by the caller).
